@@ -16,7 +16,7 @@ Drawing on real-world tasks from the AtCoder Heuristic Contest (AHC), ALE-Bench 
 
 *Note: This repository is not an official product of SakanaAI or AtCoder and is therefore not officially supported.*
 
-***Important: Please do not use this repository to participate　in AHCs ([AtCoder Heuristic Contest Generative AI Usage Rules - Version 20250616](https://info.atcoder.jp/entry/ahc-llm-rules-en)).***
+***Important: Please do not use this repository to participate in AHCs ([AtCoder Heuristic Contest Generative AI Usage Rules - Version 20250616](https://info.atcoder.jp/entry/ahc-llm-rules-en)).***
 
 https://github.com/user-attachments/assets/50a8de5a-b519-4aef-8e54-c60ac9dcbb90
 
