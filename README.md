@@ -16,6 +16,8 @@ Drawing on real-world tasks from the AtCoder Heuristic Contest (AHC), ALE-Bench 
 
 *Note: This repository is not an official product of SakanaAI or AtCoder and is therefore not officially supported.*
 
+***Important: Please do not use this repository to participate　in AHCs ([AtCoder Heuristic Contest Generative AI Usage Rules - Version 20250616](https://info.atcoder.jp/entry/ahc-llm-rules-en)).***
+
 https://github.com/user-attachments/assets/50a8de5a-b519-4aef-8e54-c60ac9dcbb90
 
 ## Setup
@@ -485,6 +487,55 @@ Set `num_workers` to at most the number of **physical cores** of your instance, 
     # Confirm with 'yes' or use -auto-approve
     ```
 
+## MCP (Model Context Protocol) Server
+The MCP server is a lightweight HTTP server that provides a simple interface for interacting with the ALE-Bench toolkit. It allows you to run evaluations and manage sessions without needing to write Python code directly.
+
+### Setup
+1. Install Node.js and npm
+    ```sh
+    # Install nvm (Node Version Manager) for easy Node.js management
+    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
+    export NVM_DIR="$HOME/.nvm"
+    [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  # This loads nvm
+    [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  # This loads nvm bash_completion
+    # Install the latest LTS version of Node.js
+    nvm install --lts
+    # Install the Model Context Protocol Inspector
+    npm install -g @modelcontextprotocol/inspector
+    ```
+2. Install the MCP server dependencies using pip or uv:
+    ```sh
+    cd mcp
+    uv sync
+    uv sync --extra dev  # For development dependencies
+    ```
+
+### Running the MCP Server
+```sh
+# Ensure you are in the mcp directory (e.g., cd mcp from the project root)
+uv run mcp run server.py
+uv run mcp dev server.py --with-editable .  # For development
+```
+
+### Use with Claude Desktop
+1. Open the `claude_desktop_config.json` file that configures the Claude Desktop. Add the following configuration to connect to the MCP server, ensuring you replace `/path/to/ALE-Bench` in the `args` with the actual absolute path to your cloned `ALE-Bench` repository directory:
+    ```json
+    {
+        "mcpServers": {
+            "ALE-Bench MCP Server": {
+                "command": "/bin/bash",
+                "args": [
+                    "-c",
+                    "cd /path/to/ALE-Bench/mcp && uv run --with ale_bench --with mcp[cli] mcp run /path/to/ALE-Bench/mcp/server.py"
+                ]
+            }
+        }
+    }
+    ```
+2. Restart the Claude Desktop application to apply the changes.
+
+<img width="680" alt="MCP_Claude_Desktop" src="https://github.com/user-attachments/assets/d9f22719-5686-406d-aa94-44406c700d6f" />
+
 ## Development
 
 -   **Environment Setup:**
@@ -516,13 +567,13 @@ Set `num_workers` to at most the number of **physical cores** of your instance, 
 -   **Python Library Development:**
     ```sh
     # Linting
-    ruff check src tests
+    ruff check src mcp tests
 
     # Formatting
-    ruff format src tests
+    ruff format src mcp tests
 
     # Static Type Checking
-    mypy src tests
+    mypy src mcp tests
 
     # Running Tests
     pytest
@@ -534,10 +585,10 @@ Set `num_workers` to at most the number of **physical cores** of your instance, 
 Please cite ALE-Bench as follows:
 
 ```bibtex
-@misc{imajuku2025ale-bench,
-    title = {{ALE-Bench}: A Benchmark for Long-Horizon Objective-Driven Algorithm Engineering},
-    author = {Imajuku, Yuki and Horie, Kohki and Iwata, Yoichi and Aoki, Kensho and Takahashi, Naohiro and Akiba, Takuya},
-    url = {https://github.com/SakanaAI/ALE-Bench},
-    year = {2025}
+@article{imajuku2025ale-bench,
+    title={ALE-Bench: A Benchmark for Long-Horizon Objective-Driven Algorithm Engineering},
+    author={Imajuku, Yuki and Horie, Kohki and Iwata, Yoichi and Aoki, Kensho and Takahashi, Naohiro and Akiba, Takuya},
+    journal={arXiv preprint arXiv:2506.09050},
+    year={2025}
 }
 ```
