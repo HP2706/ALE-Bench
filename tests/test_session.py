@@ -5,8 +5,11 @@ import json
 import tempfile
 from contextlib import AbstractContextManager, nullcontext as does_not_raise
 from pathlib import Path
+from typing import Any
 
 import pytest
+from pytest_mock.plugin import MockerFixture
+
 from ale_bench.code_language import CodeLanguage, JudgeVersion
 from ale_bench.data import (
     Problem,
@@ -20,7 +23,6 @@ from ale_bench.data import (
 from ale_bench.error import AleBenchError
 from ale_bench.result import CaseResult, JudgeResult, ResourceUsage
 from ale_bench.session import AleBenchFunction, Session
-from pytest_mock.plugin import MockerFixture
 
 
 @pytest.fixture(scope="function")
@@ -52,6 +54,7 @@ def ale_bench_session_mocker(mocker: MockerFixture) -> None:
             ),
         ],
     )
+    mocker.patch("ale_bench.session.local_visualization", return_value=[None])
 
 
 @pytest.fixture(scope="function")
@@ -157,7 +160,7 @@ class TestSession:
         self,
         current_resource_usage: ResourceUsage,
         utc_now: dt.datetime,
-        context: AbstractContextManager,
+        context: AbstractContextManager[None],
         dummy_session: Session,
         mocker: MockerFixture,
     ) -> None:
@@ -167,6 +170,13 @@ class TestSession:
         mocked_datetime.now.return_value = utc_now
         with context:
             dummy_session.case_gen(seed=[0, 1, 2])
+            action_log = [json.loads(log) for log in dummy_session.action_log]
+            assert len(action_log) == 1
+            assert action_log[0]["function"] == "case_gen"
+            assert action_log[0]["arguments"] == {"seed": [0, 1, 2], "gen_kwargs": {}}
+            assert action_log[0]["elapsed_time"] == pytest.approx(
+                (utc_now - dummy_session.session_started_at).total_seconds()
+            )
 
     @pytest.mark.parametrize(
         "current_resource_usage,utc_now,context",
@@ -250,7 +260,7 @@ class TestSession:
         self,
         current_resource_usage: ResourceUsage,
         utc_now: dt.datetime,
-        context: AbstractContextManager,
+        context: AbstractContextManager[None],
         dummy_session: Session,
         mocker: MockerFixture,
     ) -> None:
@@ -261,6 +271,20 @@ class TestSession:
         with context:
             dummy_session.case_eval(
                 input_str=["dummy input 1", "dummy input 2", "dummy input 3"], code="dummy code", code_language="rust"
+            )
+            action_log = [json.loads(log) for log in dummy_session.action_log]
+            assert len(action_log) == 1
+            assert action_log[0]["function"] == "case_eval"
+            assert action_log[0]["arguments"] == {
+                "input_str": ["dummy input 1", "dummy input 2", "dummy input 3"],
+                "code": "dummy code",
+                "code_language": "rust",
+                "judge_version": "202301",
+                "time_limit": 5.0,
+                "memory_limit": 1073741824,
+            }
+            assert action_log[0]["elapsed_time"] == pytest.approx(
+                (utc_now - dummy_session.session_started_at).total_seconds()
             )
 
     @pytest.mark.parametrize(
@@ -371,7 +395,7 @@ class TestSession:
         self,
         current_resource_usage: ResourceUsage,
         utc_now: dt.datetime,
-        context: AbstractContextManager,
+        context: AbstractContextManager[None],
         dummy_session: Session,
         mocker: MockerFixture,
     ) -> None:
@@ -381,6 +405,56 @@ class TestSession:
         mocked_datetime.now.return_value = utc_now
         with context:
             dummy_session.case_gen_eval(code="dummy code", code_language="rust", seed=[0, 1, 2])
+            action_log = [json.loads(log) for log in dummy_session.action_log]
+            assert len(action_log) == 2
+            assert action_log[0]["function"] == "case_gen"
+            assert action_log[0]["arguments"] == {"seed": [0, 1, 2], "gen_kwargs": {}}
+            assert action_log[0]["elapsed_time"] == pytest.approx(
+                (utc_now - dummy_session.session_started_at).total_seconds()
+            )
+            assert action_log[1]["function"] == "case_eval"
+            assert action_log[1]["arguments"] == {
+                "input_str": ["dummy input 1", "dummy input 2", "dummy input 3"],
+                "code": "dummy code",
+                "code_language": "rust",
+                "judge_version": "202301",
+                "time_limit": 5.0,
+                "memory_limit": 1073741824,
+            }
+            assert action_log[1]["elapsed_time"] == pytest.approx(
+                (utc_now - dummy_session.session_started_at).total_seconds()
+            )
+
+    @pytest.mark.parametrize(
+        "utc_now,context",
+        [
+            pytest.param(dt.datetime(2000, 1, 1, 0, 30, tzinfo=dt.timezone.utc), does_not_raise(), id="ok"),
+            pytest.param(
+                dt.datetime(2000, 1, 1, 1, 0, tzinfo=dt.timezone.utc),
+                pytest.raises(AleBenchError, match=r"The session is finished\."),
+                id="ng_session_duration",
+            ),
+        ],
+    )
+    def test_local_visualization(
+        self,
+        utc_now: dt.datetime,
+        context: AbstractContextManager[None],
+        dummy_session: Session,
+        mocker: MockerFixture,
+    ) -> None:
+        dummy_session._session_started_at = dt.datetime(2000, 1, 1, 0, 0, tzinfo=dt.timezone.utc)
+        mocked_datetime = mocker.patch("ale_bench.session.dt.datetime", return_value=utc_now)
+        mocked_datetime.now.return_value = utc_now
+        with context:
+            dummy_session.local_visualization(input_str="dummy input", output_str="dummy output")
+            action_log = [json.loads(log) for log in dummy_session.action_log]
+            assert len(action_log) == 1
+            assert action_log[0]["function"] == "local_visualization"
+            assert action_log[0]["arguments"] == {"input_str": ["dummy input"], "output_str": ["dummy output"]}
+            assert action_log[0]["elapsed_time"] == pytest.approx(
+                (utc_now - dummy_session.session_started_at).total_seconds()
+            )
 
     @pytest.mark.parametrize(
         "current_resource_usage,utc_now,context",
@@ -426,7 +500,7 @@ class TestSession:
         self,
         current_resource_usage: ResourceUsage,
         utc_now: dt.datetime,
-        context: AbstractContextManager,
+        context: AbstractContextManager[None],
         dummy_session: Session,
         mocker: MockerFixture,
     ) -> None:
@@ -437,6 +511,17 @@ class TestSession:
         mocked_datetime.now.return_value = utc_now
         with context:
             dummy_session.public_eval(code="dummy code", code_language="rust")
+            action_log = [json.loads(log) for log in dummy_session.action_log]
+            assert len(action_log) == 1
+            assert action_log[0]["function"] == "public_eval"
+            assert action_log[0]["arguments"] == {
+                "code": "dummy code",
+                "code_language": "rust",
+                "judge_version": "202301",
+            }
+            assert action_log[0]["elapsed_time"] == pytest.approx(
+                (utc_now - dummy_session.session_started_at).total_seconds()
+            )
 
     @pytest.mark.parametrize(
         "current_resource_usage,utc_now,context",
@@ -462,7 +547,7 @@ class TestSession:
         self,
         current_resource_usage: ResourceUsage,
         utc_now: dt.datetime,
-        context: AbstractContextManager,
+        context: AbstractContextManager[None],
         dummy_session: Session,
         mocker: MockerFixture,
     ) -> None:
@@ -472,6 +557,17 @@ class TestSession:
         mocked_datetime.now.return_value = utc_now
         with context:
             dummy_session.private_eval(code="dummy code", code_language="rust")
+            action_log = [json.loads(log) for log in dummy_session.action_log]
+            assert len(action_log) == 1
+            assert action_log[0]["function"] == "private_eval"
+            assert action_log[0]["arguments"] == {
+                "code": "dummy code",
+                "code_language": "rust",
+                "judge_version": "202301",
+            }
+            assert action_log[0]["elapsed_time"] == pytest.approx(
+                (utc_now - dummy_session.session_started_at).total_seconds()
+            )
 
     def test_save(self, dummy_session: Session) -> None:
         # Case evaluation x 1 (3 cases), Public evaluation x 1
@@ -501,18 +597,25 @@ class TestSession:
             assert actual["current_resource_usage"]["execution_time_case_eval"] == pytest.approx(14.4)
             assert actual["current_resource_usage"]["num_call_public_eval"] == 1
             assert actual["current_resource_usage"]["num_call_private_eval"] == 0
-            assert actual["action_log"] == [
-                (
-                    r'{"function": "case_eval", '
-                    r'"arguments": {"input_str": ["dummy input 1", "dummy input 2", "dummy input 3"], '
-                    r'"code": "dummy code", "code_language": "rust", "judge_version": "202301", '
-                    r'"time_limit": 5.0, "memory_limit": 1073741824}}'
-                ),
-                (
-                    r'{"function": "public_eval", '
-                    r'"arguments": {"code": "dummy code", "code_language": "rust", "judge_version": "202301"}}'
-                ),
-            ]
+            action_log = [json.loads(log) for log in actual["action_log"]]
+            assert len(action_log) == 2
+            assert action_log[0]["function"] == "case_eval"
+            assert action_log[0]["arguments"] == {
+                "input_str": ["dummy input 1", "dummy input 2", "dummy input 3"],
+                "code": "dummy code",
+                "code_language": "rust",
+                "judge_version": "202301",
+                "time_limit": 5.0,
+                "memory_limit": 1073741824,
+            }
+            assert isinstance(action_log[0]["elapsed_time"], float)
+            assert action_log[1]["function"] == "public_eval"
+            assert action_log[1]["arguments"] == {
+                "code": "dummy code",
+                "code_language": "rust",
+                "judge_version": "202301",
+            }
+            assert isinstance(action_log[1]["elapsed_time"], float)
             assert actual["last_public_eval_time"] == dummy_session.last_public_eval_time.timestamp()
             assert actual["last_private_eval_time"] == 0.0
             assert actual["session_started_at"] == dummy_session.session_started_at.timestamp()
@@ -612,25 +715,27 @@ class TestSession:
         for _ in range(2):
             dummy_session.public_eval(code="dummy code", code_language="rust")
             dummy_session._last_public_eval_time = dt.datetime.fromtimestamp(0, tz=dt.timezone.utc)
-        assert len(dummy_session.action_log) == 4
-        assert dummy_session.action_log[0] == (
-            r'{"function": "case_gen", '
-            r'"arguments": {"seed": [0, 1, 2], "gen_kwargs": {}}}'
-        )
-        assert dummy_session.action_log[1] == (
-            r'{"function": "case_eval", '
-            r'"arguments": {"input_str": ["dummy input 1", "dummy input 2", "dummy input 3"], '
-            r'"code": "dummy code", "code_language": "rust", "judge_version": "202301", '
-            r'"time_limit": 5.0, "memory_limit": 1073741824}}'
-        )
-        assert dummy_session.action_log[2] == (
-            r'{"function": "public_eval", '
-            r'"arguments": {"code": "dummy code", "code_language": "rust", "judge_version": "202301"}}'
-        )
-        assert dummy_session.action_log[3] == (
-            r'{"function": "public_eval", '
-            r'"arguments": {"code": "dummy code", "code_language": "rust", "judge_version": "202301"}}'
-        )
+        action_log = [json.loads(log) for log in dummy_session.action_log]
+        assert len(action_log) == 4
+        assert action_log[0]["function"] == "case_gen"
+        assert action_log[0]["arguments"] == {"seed": [0, 1, 2], "gen_kwargs": {}}
+        assert isinstance(action_log[0]["elapsed_time"], float)
+        assert action_log[1]["function"] == "case_eval"
+        assert action_log[1]["arguments"] == {
+            "input_str": ["dummy input 1", "dummy input 2", "dummy input 3"],
+            "code": "dummy code",
+            "code_language": "rust",
+            "judge_version": "202301",
+            "time_limit": 5.0,
+            "memory_limit": 1073741824,
+        }
+        assert isinstance(action_log[1]["elapsed_time"], float)
+        assert action_log[2]["function"] == "public_eval"
+        assert action_log[2]["arguments"] == {"code": "dummy code", "code_language": "rust", "judge_version": "202301"}
+        assert isinstance(action_log[2]["elapsed_time"], float)
+        assert action_log[3]["function"] == "public_eval"
+        assert action_log[3]["arguments"] == {"code": "dummy code", "code_language": "rust", "judge_version": "202301"}
+        assert isinstance(action_log[3]["elapsed_time"], float)
 
     def test_last_public_eval_time(self, dummy_session: Session) -> None:
         assert dummy_session.last_public_eval_time == dt.datetime(1970, 1, 1, 0, 0, tzinfo=dt.timezone.utc)
@@ -721,7 +826,7 @@ class TestSession:
     def test_session_finished(
         self,
         utc_now: dt.datetime,
-        context: AbstractContextManager,
+        context: AbstractContextManager[None],
         dummy_session: Session,
         mocker: MockerFixture,
     ) -> None:
@@ -1013,7 +1118,7 @@ class TestSession:
         function_type: AleBenchFunction,
         current_resource_usage: ResourceUsage,
         utc_now: dt.datetime,
-        context: AbstractContextManager,
+        context: AbstractContextManager[None],
         dummy_session: Session,
         mocker: MockerFixture,
     ) -> None:
@@ -1228,7 +1333,7 @@ class TestSession:
         function_type: AleBenchFunction,
         current_resource_usage: ResourceUsage,
         utc_now: dt.datetime,
-        context: AbstractContextManager,
+        context: AbstractContextManager[None],
         dummy_session: Session,
         mocker: MockerFixture,
     ) -> None:
@@ -1278,12 +1383,110 @@ class TestSession:
         self,
         dummy_session: Session,
         seed: int | None,
-        gen_kwargs: dict | None,
-        expected: tuple[int, dict],
-        context: AbstractContextManager,
+        gen_kwargs: dict[str, Any] | None,
+        expected: tuple[list[int], dict[str, Any]],
+        context: AbstractContextManager[None],
     ) -> None:
         with context:
             arguments = dummy_session._check_input_generation_arguments(seed=seed, gen_kwargs=gen_kwargs)
+            assert arguments == expected
+
+    @pytest.mark.parametrize(
+        "input_str,output_str,expected,context",
+        [
+            pytest.param(
+                "dummy input",
+                "dummy output",
+                (["dummy input"], ["dummy output"]),
+                does_not_raise(),
+                id="default_both_scalar",
+            ),
+            pytest.param(
+                "dummy input",
+                ["dummy output"],
+                None,
+                pytest.raises(
+                    AleBenchError,
+                    match=r"Both `input_str` and `output_str` must be either a string or a list of strings\.",
+                ),
+                id="default_input_scalar_output_list",
+            ),
+            pytest.param(
+                ["dummy input"],
+                "dummy output",
+                None,
+                pytest.raises(
+                    AleBenchError,
+                    match=r"Both `input_str` and `output_str` must be either a string or a list of strings\.",
+                ),
+                id="default_input_list_output_scalar",
+            ),
+            pytest.param(
+                ["dummy input"],
+                ["dummy output"],
+                (["dummy input"], ["dummy output"]),
+                does_not_raise(),
+                id="default_both_list",
+            ),
+            pytest.param(
+                ["dummy input 1", "dummy input 2", "dummy input 3"],
+                ["dummy output 1", "dummy output 2", "dummy output 3"],
+                (
+                    ["dummy input 1", "dummy input 2", "dummy input 3"],
+                    ["dummy output 1", "dummy output 2", "dummy output 3"],
+                ),
+                does_not_raise(),
+                id="default_both_list_multiple",
+            ),
+            pytest.param(
+                ["dummy input 1", "dummy input 2", "dummy input 3"],
+                ["dummy output 1", "dummy output 2", "dummy output 3", " "],
+                None,
+                pytest.raises(
+                    AleBenchError, match=r"The number of input strings and output strings must be the same\."
+                ),
+                id="default_both_list_different_length",
+            ),
+            pytest.param(
+                "            ",
+                "dummy output",
+                None,
+                pytest.raises(AleBenchError, match=r"The input string is empty\."),
+                id="default_both_string_input_empty",
+            ),
+            pytest.param(
+                "dummy input",
+                "           ",
+                None,
+                pytest.raises(AleBenchError, match=r"The output string is empty\."),
+                id="default_both_string_output_empty",
+            ),
+            pytest.param(
+                ["dummy input 1", "               "],
+                ["dummy output 1", "dummy output 2"],
+                None,
+                pytest.raises(AleBenchError, match=r"The input string is empty\."),
+                id="default_list_string_input_empty",
+            ),
+            pytest.param(
+                ["dummy input 1", "dummy input 2"],
+                ["dummy output 1", "            "],
+                None,
+                pytest.raises(AleBenchError, match=r"The output string is empty\."),
+                id="default_list_string_output_empty",
+            ),
+        ],
+    )
+    def test_check_local_visualization_arguments(
+        self,
+        dummy_session: Session,
+        input_str: str | list[str],
+        output_str: str | list[str],
+        expected: tuple[list[str], list[str]] | None,
+        context: AbstractContextManager[None],
+    ) -> None:
+        with context:
+            arguments = dummy_session._check_local_visualization_arguments(input_str=input_str, output_str=output_str)
             assert arguments == expected
 
     @pytest.mark.parametrize(
@@ -1652,8 +1855,8 @@ class TestSession:
         judge_version: JudgeVersion | str | None,
         time_limit: float | None,
         memory_limit: int | str | None,
-        expected: tuple[str, str, CodeLanguage, JudgeVersion, float, int],
-        context: AbstractContextManager,
+        expected: tuple[list[str], str, CodeLanguage, JudgeVersion, float, int],
+        context: AbstractContextManager[None],
     ) -> None:
         with context:
             arguments = dummy_session._check_run_cases_arguments(

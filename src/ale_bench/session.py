@@ -8,14 +8,16 @@ import shutil
 import warnings
 from enum import Enum
 from pathlib import Path
-from typing import NoReturn
+from typing import Any, NoReturn
+
+from PIL import Image
 
 import ale_bench.constants
 from ale_bench.code_language import CodeLanguage, JudgeVersion
 from ale_bench.data import Problem, RankPerformanceMap, Standings, start_visualization_server
 from ale_bench.error import AleBenchError
 from ale_bench.result import CaseResult, ResourceUsage, Result
-from ale_bench.tool_wrappers import generate_inputs, run_cases
+from ale_bench.tool_wrappers import generate_inputs, local_visualization, run_cases
 
 
 class AleBenchFunction(str, Enum):
@@ -123,12 +125,12 @@ class Session:
         return f"Session(problem_id={self.problem_id})"
 
     # Interface
-    def case_gen(self, seed: list[int] | int = 0, gen_kwargs: dict = {}) -> list[str] | str:
+    def case_gen(self, seed: list[int] | int = 0, gen_kwargs: dict[str, Any] = {}) -> list[str] | str:
         """Generate a case using the given seed and generation arguments.
 
         Args:
             seed (list[int] | int, optional): The seed(s) for the case generation. Defaults to 0.
-            gen_kwargs (dict): The generation arguments. Defaults to an empty dictionary.
+            gen_kwargs (dict[str, Any]): The generation arguments. Defaults to an empty dictionary.
 
         Returns:
             list[str] | str: The generated case(s). If `seed` is a list, returns a list of cases.
@@ -138,11 +140,13 @@ class Session:
         """
         # Preprocessing
         try:
-            assert self.session_finished is False
-        except (AleBenchError, AssertionError):
+            if self.session_finished:
+                raise AleBenchError("The session is finished.")
+        except AleBenchError:
             raise AleBenchError("The session is finished.")
         if not self._check_within_resource_usage_before(AleBenchFunction.CASE_GEN):
             raise AleBenchError("The resource usage is exceeded.")
+        elapsed_time = (dt.datetime.now(tz=dt.timezone.utc) - self._session_started_at).total_seconds()
         is_scalar = isinstance(seed, int)
         seed, gen_kwargs = self._check_input_generation_arguments(seed=seed, gen_kwargs=gen_kwargs)
 
@@ -162,7 +166,13 @@ class Session:
 
         # Save the action log and return the result
         self._action_log.append(
-            json.dumps({"function": "case_gen", "arguments": {"seed": seed, "gen_kwargs": gen_kwargs}})
+            json.dumps(
+                {
+                    "function": "case_gen",
+                    "arguments": {"seed": seed, "gen_kwargs": gen_kwargs},
+                    "elapsed_time": elapsed_time,
+                }
+            )
         )
         return generated_cases[0] if is_scalar else generated_cases
 
@@ -198,11 +208,13 @@ class Session:
         """
         # Preprocessing
         try:
-            assert self.session_finished is False
-        except (AleBenchError, AssertionError):
+            if self.session_finished:
+                raise AleBenchError("The session is finished.")
+        except AleBenchError:
             raise AleBenchError("The session is finished.")
         if not self._check_within_resource_usage_before(AleBenchFunction.CASE_EVAL):
             raise AleBenchError("The resource usage is exceeded.")
+        elapsed_time = (dt.datetime.now(tz=dt.timezone.utc) - self._session_started_at).total_seconds()
         (input_str, code, code_language, judge_version, time_limit, memory_limit) = self._check_run_cases_arguments(
             input_str=input_str,
             code=code,
@@ -253,6 +265,7 @@ class Session:
                         "time_limit": time_limit,
                         "memory_limit": memory_limit,
                     },
+                    "elapsed_time": elapsed_time,
                 }
             )
         )
@@ -270,7 +283,7 @@ class Session:
         seed: list[int] | int = 0,
         time_limit: float | None = None,
         memory_limit: int | str | None = None,
-        gen_kwargs: dict = {},
+        gen_kwargs: dict[str, Any] = {},
         skip_local_visualization: bool = False,
     ) -> Result:
         """Generate a case and evaluate the code with the given input.
@@ -282,7 +295,7 @@ class Session:
             seed (list[int] | int, optional): The seed for the case generation. Defaults to 0.
             time_limit (float, optional): The time limit in seconds. Defaults to None.
             memory_limit (int | str, optional): The memory limit in bytes. Defaults to None.
-            gen_kwargs (dict): The generation arguments. Defaults to an empty dictionary.
+            gen_kwargs (dict[str, Any]): The generation arguments. Defaults to an empty dictionary.
             skip_local_visualization (bool, optional): Whether to skip local visualization. Defaults to False.
 
         Returns:
@@ -293,8 +306,9 @@ class Session:
         """
         # Preprocessing (to avoid unnecessary computation, we check the resource usage of both functions here)
         try:
-            assert self.session_finished is False
-        except (AleBenchError, AssertionError):
+            if self.session_finished:
+                raise AleBenchError("The session is finished.")
+        except AleBenchError:
             raise AleBenchError("The session is finished.")
         if not self._check_within_resource_usage_before(AleBenchFunction.CASE_GEN_EVAL):
             raise AleBenchError("The resource usage is exceeded.")
@@ -316,6 +330,59 @@ class Session:
             # NOTE: maybe this block is not reached because we check the resource usage in each function
             raise AleBenchError("The resource usage is exceeded after the action.")
         return result
+
+    def local_visualization(
+        self,
+        input_str: list[str] | str,
+        output_str: list[str] | str,
+    ) -> list[Image.Image | None] | Image.Image | None:
+        """Create local visualizations for the given input and output strings.
+
+        Args:
+            input_str (list[str] | str): The input string(s) for the visualization.
+            output_str (list[str] | str): The output string(s) for the visualization.
+
+        Returns:
+            list[Image.Image | None] | Image.Image | None: The generated visualization(s).
+                None if the problem has no local visualization or the visualization fails.
+                Scalar value will be returned if `input_str` and `output_str` are scalar.
+        """
+        # Preprocessing
+        try:
+            if self.session_finished:
+                raise AleBenchError("The session is finished.")
+        except AleBenchError:
+            raise AleBenchError("The session is finished.")
+        elapsed_time = (dt.datetime.now(tz=dt.timezone.utc) - self._session_started_at).total_seconds()
+        is_scalar = isinstance(input_str, str)
+        input_str, output_str = self._check_local_visualization_arguments(input_str=input_str, output_str=output_str)
+
+        # Local visualization
+        local_visualization_images = local_visualization(
+            inputs=input_str,
+            outputs=output_str,
+            problem_id=self._problem.metadata.problem_id,
+            tool_dir=self._tool_dir,
+            num_workers=self.num_workers,
+        )
+
+        # Postprocessing
+        assert len(local_visualization_images) == len(input_str), (
+            "The number of local visualization images must match the number of input strings."
+        )
+
+        # Save the action log and return the result
+        self._action_log.append(
+            json.dumps(
+                {
+                    "function": "local_visualization",
+                    "arguments": {"input_str": input_str, "output_str": output_str},
+                    "elapsed_time": elapsed_time,
+                }
+            )
+        )
+
+        return local_visualization_images[0] if is_scalar else local_visualization_images
 
     def public_eval(
         self,
@@ -341,11 +408,13 @@ class Session:
         """
         # Preprocessing
         try:
-            assert self.session_finished is False
-        except (AleBenchError, AssertionError):
+            if self.session_finished:
+                raise AleBenchError("The session is finished.")
+        except AleBenchError:
             raise AleBenchError("The session is finished.")
         if not self._check_within_resource_usage_before(AleBenchFunction.PUBLIC_EVAL):
             raise AleBenchError("The resource usage is exceeded.")
+        elapsed_time = (dt.datetime.now(tz=dt.timezone.utc) - self._session_started_at).total_seconds()
         _, code, code_language, judge_version, _, _ = self._check_run_cases_arguments(
             code=code, code_language=code_language, judge_version=judge_version
         )
@@ -386,6 +455,7 @@ class Session:
                         "code_language": code_language.value,
                         "judge_version": judge_version.value,
                     },
+                    "elapsed_time": elapsed_time,
                 }
             )
         )
@@ -419,11 +489,13 @@ class Session:
         """
         # Preprocessing
         try:
-            assert self.session_finished is False
-        except (AleBenchError, AssertionError):
+            if self.session_finished:
+                raise AleBenchError("The session is finished.")
+        except AleBenchError:
             raise AleBenchError("The session is finished.")
         if not self._check_within_resource_usage_before(AleBenchFunction.PRIVATE_EVAL):
             raise AleBenchError("The resource usage is exceeded.")
+        elapsed_time = (dt.datetime.now(tz=dt.timezone.utc) - self._session_started_at).total_seconds()
         _, code, code_language, judge_version, _, _ = self._check_run_cases_arguments(
             code=code, code_language=code_language, judge_version=judge_version
         )
@@ -464,6 +536,7 @@ class Session:
                         "code_language": code_language.value,
                         "judge_version": judge_version.value,
                     },
+                    "elapsed_time": elapsed_time,
                 }
             )
         )
@@ -496,13 +569,13 @@ class Session:
         )
         return processed_private_result, new_rank, new_performance
 
-    def save(self, filepath: str | os.PathLike = "session.json") -> None:
+    def save(self, filepath: str | os.PathLike[str] = "session.json") -> None:
         """Save the session to a JSON file.
 
         You can restart the session from this file by using the `load` method.
 
         Args:
-            filepath (str | os.PathLike, optional): The path to save the session. Defaults to "session.json".
+            filepath (str | os.PathLike[str], optional): The path to save the session. Defaults to "session.json".
         """
         filepath_path = Path(filepath)
         with open(filepath_path, "w") as f:
@@ -814,9 +887,9 @@ class Session:
     def _check_input_generation_arguments(
         self,
         seed: list[int] | int | None = None,
-        gen_kwargs: dict | None = None,
-    ) -> tuple[list[int], dict]:
-        """Check if the arguments for `_input_generation` are valid."""
+        gen_kwargs: dict[str, Any] | None = None,
+    ) -> tuple[list[int], dict[str, Any]]:
+        """Check if the arguments for `generate_inputs` are valid."""
         # Check `seed`
         if seed is None:
             seed = [0]
@@ -838,6 +911,27 @@ class Session:
 
         return seed, ret_gen_kwargs
 
+    def _check_local_visualization_arguments(
+        self,
+        input_str: list[str] | str,
+        output_str: list[str] | str,
+    ) -> tuple[list[str], list[str]]:
+        """Check if the arguments for `local_visualization` are valid."""
+        if isinstance(input_str, str) and isinstance(output_str, str):
+            input_str = [input_str]
+            output_str = [output_str]
+        elif isinstance(input_str, str) or isinstance(output_str, str):
+            raise AleBenchError("Both `input_str` and `output_str` must be either a string or a list of strings.")
+        # Check the length of `input_str` and `output_str`
+        if len(input_str) != len(output_str):
+            raise AleBenchError("The number of input strings and output strings must be the same.")
+        # Check if the input and output strings are empty
+        if len(input_str) == 0 or any(in_s.strip() == "" for in_s in input_str):
+            raise AleBenchError("The input string is empty.")
+        if len(output_str) == 0 or any(out_s.strip() == "" for out_s in output_str):
+            raise AleBenchError("The output string is empty.")
+        return input_str, output_str
+
     def _check_run_cases_arguments(
         self,
         input_str: list[str] | str | None = None,
@@ -847,7 +941,7 @@ class Session:
         time_limit: float | None = None,
         memory_limit: int | str | None = None,
     ) -> tuple[list[str], str, CodeLanguage, JudgeVersion, float, int]:
-        """Check if the arguments for `_run_cases` are valid."""
+        """Check if the arguments for `run_cases` are valid."""
         # Check `input_str`
         if input_str is None:
             input_str = [""]
