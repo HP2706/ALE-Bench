@@ -9,7 +9,6 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-import docker
 from pydantic import BaseModel, ConfigDict, Field
 from requests.exceptions import ConnectionError, Timeout
 
@@ -25,7 +24,7 @@ from ale_bench.code_language import (
 )
 from ale_bench.data import ProblemType
 from ale_bench.result import CaseResult, JudgeResult, Profiles
-from ale_bench.utils import read_svg
+from ale_bench.utils import docker_client, read_svg
 
 
 class HostPathsCompile(BaseModel):
@@ -123,31 +122,29 @@ class HostPathsBatchRun(BaseModel):
 def setup_paths_batch_run(
     host_paths_compile: HostPathsCompile,
     temp_dir: Path,
-    problem_id: str,
-    case_idx: int,
     input_str: str,
+    prefix: str = "",
 ) -> HostPathsBatchRun:
     """Setup paths for the running step of the submission for batch problems.
 
     Args:
         host_paths_compile (HostPathsCompile): The paths in the compilation step for the runner tool.
         temp_dir (Path): The temporary directory.
-        problem_id (str): The problem ID.
-        case_idx (int): The case number for the input.
         input_str (str): The input string for the problem.
+        prefix (str): The prefix for the input/output/profiles files. Defaults to "".
 
     Returns:
         HostPathsBatchRun: The paths for the runner tool.
     """
-    input_file_ext = ale_bench.constants.INPUT_FILE.split(".")[-1]
-    input_file = temp_dir / f"{problem_id}_{case_idx:06d}_input.{input_file_ext}"
+    input_file_name = ale_bench.constants.INPUT_FILE.split("/")[-1]
+    input_file = temp_dir / f"{prefix}{input_file_name}"
     input_file.touch()
     input_file.write_text(input_str)
-    output_file_ext = ale_bench.constants.OUTPUT_FILE.split(".")[-1]
-    output_file = temp_dir / f"{problem_id}_{case_idx:06d}_output.{output_file_ext}"
+    output_file_name = ale_bench.constants.OUTPUT_FILE.split("/")[-1]
+    output_file = temp_dir / f"{prefix}{output_file_name}"
     output_file.touch()
-    profiles_file_ext = ale_bench.constants.PROFILES_FILE.split(".")[-1]
-    profiles_file = temp_dir / f"{problem_id}_{case_idx:06d}_profiles.{profiles_file_ext}"
+    profiles_file_name = ale_bench.constants.PROFILES_FILE.split("/")[-1]
+    profiles_file = temp_dir / f"{prefix}{profiles_file_name}"
     profiles_file.touch()
     return HostPathsBatchRun(
         code_file=host_paths_compile.code_file,
@@ -285,31 +282,29 @@ class HostPathsReactiveJudge(BaseModel):
 def setup_paths_reactive_judge(
     host_paths_compile: HostPathsCompile,
     temp_dir: Path,
-    problem_id: str,
-    case_idx: int,
     input_str: str,
+    prefix: str = "",
 ) -> HostPathsReactiveJudge:
     """Setup paths for the judging step of the submission for reactive problems.
 
     Args:
         host_paths_compile (HostPathsCompile): The paths in the compilation step for the runner tool.
         temp_dir (Path): The temporary directory.
-        problem_id (str): The problem ID.
-        case_idx (int): The case number for the input.
         input_str (str): The input string for the problem.
+        prefix (str): The prefix for the input/output/profiles files. Defaults to "".
 
     Returns:
-        HostPathsBatchRun: The paths for the runner tool.
+        HostPathsReactiveJudge: The paths for the runner tool.
     """
-    input_file_ext = ale_bench.constants.INPUT_FILE.split(".")[-1]
-    input_file = temp_dir / f"{problem_id}_{case_idx:06d}_input.{input_file_ext}"
+    input_file_name = ale_bench.constants.INPUT_FILE.split("/")[-1]
+    input_file = temp_dir / f"{prefix}{input_file_name}"
     input_file.touch()
     input_file.write_text(input_str)
-    output_file_ext = ale_bench.constants.OUTPUT_FILE.split(".")[-1]
-    output_file = temp_dir / f"{problem_id}_{case_idx:06d}_output.{output_file_ext}"
+    output_file_name = ale_bench.constants.OUTPUT_FILE.split("/")[-1]
+    output_file = temp_dir / f"{prefix}{output_file_name}"
     output_file.touch()
-    profiles_file_ext = ale_bench.constants.PROFILES_FILE.split(".")[-1]
-    profiles_file = temp_dir / f"{problem_id}_{case_idx:06d}_profiles.{profiles_file_ext}"
+    profiles_file_name = ale_bench.constants.PROFILES_FILE.split("/")[-1]
+    profiles_file = temp_dir / f"{prefix}{profiles_file_name}"
     profiles_file.touch()
     return HostPathsReactiveJudge(
         code_file=host_paths_compile.code_file,
@@ -391,7 +386,7 @@ class HostPathsVis(BaseModel):
 
 
 def setup_paths_vis(
-    host_paths_judge: HostPathsBatchJudge | HostPathsReactiveJudge, temp_dir: Path, problem_id: str, case_idx: int
+    host_paths_judge: HostPathsBatchJudge | HostPathsReactiveJudge, temp_dir: Path, problem_id: str, prefix: str = ""
 ) -> HostPathsVis:
     """Setup paths for the visualization step of the judge.
 
@@ -399,7 +394,7 @@ def setup_paths_vis(
         host_paths_run (HostPathsBatchRun | HostPathsReactiveRun): The paths for the judge.
         temp_dir (Path): The temporary directory.
         problem_id (str): The problem ID.
-        case_idx (int): The case index for the input.
+        prefix (str): The prefix for the local visualization file. Defaults to "".
 
     Returns:
         HostPathsVis: The paths for the visualization step of the judge.
@@ -410,7 +405,7 @@ def setup_paths_vis(
         else ale_bench.constants.LOCAL_VIS_HTML
     )
     local_visualization_ext = local_visualization_container.rsplit(".", 1)[1]
-    local_visualization_file = temp_dir / f"{problem_id}_{case_idx:06d}_local_visualization.{local_visualization_ext}"
+    local_visualization_file = temp_dir / f"{prefix}local_visualization.{local_visualization_ext}"
     local_visualization_file.touch()
     return HostPathsVis(
         input_file=host_paths_judge.input_file,
@@ -479,62 +474,65 @@ def run_compile_container(
     Returns:
         CaseResult | None: The case result if the compilation fails, otherwise None.
     """
-    docker_client = docker.from_env()
-    container = docker_client.containers.run(
-        image=get_docker_image_name(code_language, judge_version),
-        command=f"/bin/sh -c '{compile_command}'",
-        remove=False,
-        auto_remove=False,
-        cpu_period=100000,
-        cpu_quota=100000,  # 1 CPU
-        detach=True,
-        group_add=[os.getgid()],
-        mem_limit=ale_bench.constants.MAX_MEMORY_LIMIT,
-        network_disabled=True,
-        user=os.getuid(),
-        volumes=compile_volumes,
-        working_dir=ale_bench.constants.WORK_DIR,
-    )
-    try:
-        container.wait(timeout=ale_bench.constants.COMPILE_TIMEOUT)
-    # NOTE: It will catch ReadTimeout, ConnectTimeout and ConnectionError.
-    # NOTE: ConnectionError occurs when the compile code timed out with sleep.
-    except (Timeout, ConnectionError):
-        if code_language != CodeLanguage.PYTHON:
-            container.remove(force=True)
-            return CaseResult(
-                input_str=None,
-                output_str=None,
-                error_str=None,
-                judge_result=JudgeResult.COMPILATION_ERROR,
-                message=f"Compilation timed out ({ale_bench.constants.COMPILE_TIMEOUT}s).",
-                absolute_score=ale_bench.constants.REJECTED_ABSOLUTE_SCORE,
-                execution_time=0.0,
-                memory_usage=0,
-            )
-    except Exception:
-        container.remove(force=True)
-        return CaseResult(
-            input_str=None,
-            output_str=None,
-            error_str=None,
-            judge_result=JudgeResult.COMPILATION_ERROR,
-            message="Failed to compile the code.",
-            absolute_score=ale_bench.constants.REJECTED_ABSOLUTE_SCORE,
-            execution_time=0.0,
-            memory_usage=0,
+    with docker_client() as client:
+        container = client.containers.run(
+            image=get_docker_image_name(code_language, judge_version),
+            command=f"/bin/sh -c '{compile_command}'",
+            remove=False,
+            auto_remove=False,
+            cpu_period=100000,
+            cpu_quota=100000,  # 1 CPU
+            detach=True,
+            group_add=[os.getgid()],
+            mem_limit=ale_bench.constants.MAX_MEMORY_LIMIT,
+            network_disabled=True,
+            user=os.getuid(),
+            volumes=compile_volumes,
+            working_dir=ale_bench.constants.WORK_DIR,
         )
-    # stdout = container.logs(stdout=True, stderr=False).decode("utf-8").strip()
-    stderr = container.logs(stdout=False, stderr=True).decode("utf-8").strip()
-    container.remove(force=True)
+        try:
+            try:
+                container.wait(timeout=ale_bench.constants.COMPILE_TIMEOUT)
+            # NOTE: It will catch ReadTimeout, ConnectTimeout and ConnectionError.
+            # NOTE: ConnectionError occurs when the compile code timed out with sleep.
+            except (Timeout, ConnectionError):
+                if code_language != CodeLanguage.PYTHON:
+                    return CaseResult(
+                        input_str=None,
+                        output_str=None,
+                        error_str=None,
+                        judge_result=JudgeResult.COMPILATION_ERROR,
+                        message=f"Compilation timed out ({ale_bench.constants.COMPILE_TIMEOUT}s).",
+                        absolute_score=ale_bench.constants.REJECTED_ABSOLUTE_SCORE,
+                        execution_time=0.0,
+                        memory_usage=0,
+                    )
+            except Exception:
+                return CaseResult(
+                    input_str=None,
+                    output_str=None,
+                    error_str=None,
+                    judge_result=JudgeResult.COMPILATION_ERROR,
+                    message="Failed to compile the code.",
+                    absolute_score=ale_bench.constants.REJECTED_ABSOLUTE_SCORE,
+                    execution_time=0.0,
+                    memory_usage=0,
+                )
+            # stdout = container.logs(stdout=True, stderr=False).decode("utf-8").strip()
+            stderr = container.logs(stdout=False, stderr=True).decode("utf-8").strip()
+            exit_code = container.attrs["State"]["ExitCode"]
+        finally:
+            container.remove(force=True)
     object_size = host_paths_compile.object_file.stat().st_size
-    if (
-        container.attrs["State"]["ExitCode"] != 0
-        or (
-            code_language != CodeLanguage.PYTHON and object_size == 0
-        )  # NOTE: As for Python, it is fine if .pyc file is not created during the compilation step.
-        or (code_language == CodeLanguage.PYTHON and "SyntaxError" in stderr)
-    ):  # NOTE: We regard SyntaxError as a compilation error for Python
+    if any(
+        [
+            exit_code != 0,
+            # NOTE: As for Python, it is fine if .pyc file is not created during the compilation step.
+            code_language != CodeLanguage.PYTHON and object_size == 0,
+            # NOTE: We regard SyntaxError as a compilation error for Python
+            code_language == CodeLanguage.PYTHON and "SyntaxError" in stderr,
+        ]
+    ):
         return CaseResult(
             input_str=None,
             output_str=None,
@@ -568,31 +566,34 @@ def run_batch_run_container(
 
     Returns:
         CaseResult | tuple[float, str]:
-            The case result if the run fails, otherwise the execution time in seconds and the stndard error.
+            The case result if the run fails, otherwise the execution time in seconds and the standard error.
     """
-    docker_client = docker.from_env()
-    start_at = time.perf_counter()
-    container = docker_client.containers.run(
-        image=get_docker_image_name(code_language, judge_version),
-        command=f"/bin/sh -c '{run_command}'",
-        remove=False,
-        auto_remove=False,
-        cpu_period=100000,
-        cpu_quota=100000,  # 1 CPU
-        detach=True,
-        group_add=[os.getgid()],
-        mem_limit=ale_bench.constants.MAX_MEMORY_LIMIT,
-        network_disabled=True,
-        user=os.getuid(),
-        volumes=run_volumes,
-        working_dir=ale_bench.constants.WORK_DIR,
-    )
-    container.wait()  # NOTE: Killed by `timeout` command in the run command
-    end_at = time.perf_counter()
-    execution_time_host = end_at - start_at  # NOTE: we use this wall time for `RE` (including the overhead)
-    stderr = container.logs(stdout=False, stderr=True).decode("utf-8").strip()
-    container.remove(force=True)
-    if container.attrs["State"]["ExitCode"] != 0:
+    with docker_client() as client:
+        start_at = time.perf_counter()
+        container = client.containers.run(
+            image=get_docker_image_name(code_language, judge_version),
+            command=f"/bin/sh -c '{run_command}'",
+            remove=False,
+            auto_remove=False,
+            cpu_period=100000,
+            cpu_quota=100000,  # 1 CPU
+            detach=True,
+            group_add=[os.getgid()],
+            mem_limit=ale_bench.constants.MAX_MEMORY_LIMIT,
+            network_disabled=True,
+            user=os.getuid(),
+            volumes=run_volumes,
+            working_dir=ale_bench.constants.WORK_DIR,
+        )
+        try:
+            container.wait()  # NOTE: Killed by `timeout` command in the run command
+            end_at = time.perf_counter()
+            execution_time_host = end_at - start_at  # NOTE: we use this wall time for `RE` (including the overhead)
+            stderr = container.logs(stdout=False, stderr=True).decode("utf-8").strip()
+            exit_code = container.attrs["State"]["ExitCode"]
+        finally:
+            container.remove(force=True)
+    if exit_code != 0:
         if execution_time_host > time_limit:  # Killed by `timeout` command
             return CaseResult(
                 input_str=input_str,
@@ -639,27 +640,30 @@ def run_batch_judge_container(
     Returns:
         CaseResult | int: The case result if the judge fails, otherwise the score.
     """
-    docker_client = docker.from_env()
-    container = docker_client.containers.run(
-        image=ale_bench.constants.RUST_TOOL_DOCKER_IMAGE,
-        command=f"/bin/sh -c '{judge_command}'",
-        remove=False,
-        auto_remove=False,
-        cpu_period=100000,
-        cpu_quota=100000,  # 1 CPU
-        detach=True,
-        group_add=[os.getgid()],
-        mem_limit=ale_bench.constants.MAX_MEMORY_LIMIT,
-        network_disabled=True,
-        user=os.getuid(),
-        volumes=judge_volumes,
-        working_dir=ale_bench.constants.WORK_DIR,
-    )
-    container.wait()  # NOTE: Killed by `timeout` command in the run command
-    # stdout = container.logs(stdout=True, stderr=False).decode("utf-8").strip()
-    stderr = container.logs(stdout=False, stderr=True).decode("utf-8").strip()
-    container.remove(force=True)
-    if container.attrs["State"]["ExitCode"] != 0:
+    with docker_client() as client:
+        container = client.containers.run(
+            image=ale_bench.constants.RUST_TOOL_DOCKER_IMAGE,
+            command=f"/bin/sh -c '{judge_command}'",
+            remove=False,
+            auto_remove=False,
+            cpu_period=100000,
+            cpu_quota=100000,  # 1 CPU
+            detach=True,
+            group_add=[os.getgid()],
+            mem_limit=ale_bench.constants.MAX_MEMORY_LIMIT,
+            network_disabled=True,
+            user=os.getuid(),
+            volumes=judge_volumes,
+            working_dir=ale_bench.constants.WORK_DIR,
+        )
+        try:
+            container.wait()  # NOTE: Killed by `timeout` command in the run command
+            # stdout = container.logs(stdout=True, stderr=False).decode("utf-8").strip()
+            stderr = container.logs(stdout=False, stderr=True).decode("utf-8").strip()
+            exit_code = container.attrs["State"]["ExitCode"]
+        finally:
+            container.remove(force=True)
+    if exit_code != 0:
         return CaseResult(
             input_str=input_str,
             output_str=output_str,
@@ -723,30 +727,33 @@ def run_reactive_judge_container(
         CaseResult | tuple[float, int]: The case result if the run fails,
             otherwise the execution time in seconds, the score and the standard error.
     """
-    docker_client = docker.from_env()
-    start_at = time.perf_counter()
-    container = docker_client.containers.run(
-        image=get_docker_image_name(code_language, judge_version),
-        command=f"/bin/sh -c '{judge_command}'",
-        remove=False,
-        auto_remove=False,
-        cpu_period=100000,
-        cpu_quota=100000,  # 1 CPU
-        detach=True,
-        group_add=[os.getgid()],
-        mem_limit=ale_bench.constants.MAX_MEMORY_LIMIT,
-        network_disabled=True,
-        user=os.getuid(),
-        volumes=judge_volumes,
-        working_dir=ale_bench.constants.WORK_DIR,
-    )
-    container.wait()  # NOTE: Killed by `timeout` command in the run command
-    end_at = time.perf_counter()
-    # stdout = container.logs(stdout=True, stderr=False).decode("utf-8").strip()
-    stderr = container.logs(stdout=False, stderr=True).decode("utf-8").strip()
-    execution_time_host = end_at - start_at  # NOTE: we use this wall time for `RE` (including the overhead)
-    container.remove(force=True)
-    if container.attrs["State"]["ExitCode"] != 0 or stderr == "":
+    with docker_client() as client:
+        start_at = time.perf_counter()
+        container = client.containers.run(
+            image=get_docker_image_name(code_language, judge_version),
+            command=f"/bin/sh -c '{judge_command}'",
+            remove=False,
+            auto_remove=False,
+            cpu_period=100000,
+            cpu_quota=100000,  # 1 CPU
+            detach=True,
+            group_add=[os.getgid()],
+            mem_limit=ale_bench.constants.MAX_MEMORY_LIMIT,
+            network_disabled=True,
+            user=os.getuid(),
+            volumes=judge_volumes,
+            working_dir=ale_bench.constants.WORK_DIR,
+        )
+        try:
+            container.wait()  # NOTE: Killed by `timeout` command in the run command
+            end_at = time.perf_counter()
+            # stdout = container.logs(stdout=True, stderr=False).decode("utf-8").strip()
+            stderr = container.logs(stdout=False, stderr=True).decode("utf-8").strip()
+            execution_time_host = end_at - start_at  # NOTE: we use this wall time for `RE` (including the overhead)
+            exit_code = container.attrs["State"]["ExitCode"]
+        finally:
+            container.remove(force=True)
+    if exit_code != 0 or stderr == "":
         if execution_time_host > time_limit:  # Killed by `timeout` command
             return CaseResult(
                 input_str=input_str,
@@ -793,29 +800,31 @@ def run_vis_container(vis_command: str, vis_volumes: dict[str, dict[str, str]]) 
         vis_command (str): The visualization command.
         vis_volumes (dict[str, dict[str, str]]): The volumes for the visualization command with the setup.
     """
-    docker_client = docker.from_env()
-    container = docker_client.containers.run(
-        image=ale_bench.constants.RUST_TOOL_DOCKER_IMAGE,
-        command=f"/bin/sh -c '{vis_command}'",
-        remove=False,
-        auto_remove=False,
-        cpu_period=100000,
-        cpu_quota=100000,  # 1 CPU
-        detach=True,
-        group_add=[os.getgid()],
-        mem_limit=ale_bench.constants.MAX_MEMORY_LIMIT,
-        network_disabled=True,
-        user=os.getuid(),
-        volumes=vis_volumes,
-        working_dir=ale_bench.constants.WORK_DIR,
-    )
-    try:
-        container.wait(timeout=ale_bench.constants.VISUALIZE_TIMEOUT)
-    except Exception:
-        container.remove(force=True)
-        raise RuntimeError("Timeout while running the visualization command. Something went wrong.")
-    container.remove(force=True)
-    if container.attrs["State"]["ExitCode"] != 0:
+    with docker_client() as client:
+        container = client.containers.run(
+            image=ale_bench.constants.RUST_TOOL_DOCKER_IMAGE,
+            command=f"/bin/sh -c '{vis_command}'",
+            remove=False,
+            auto_remove=False,
+            cpu_period=100000,
+            cpu_quota=100000,  # 1 CPU
+            detach=True,
+            group_add=[os.getgid()],
+            mem_limit=ale_bench.constants.MAX_MEMORY_LIMIT,
+            network_disabled=True,
+            user=os.getuid(),
+            volumes=vis_volumes,
+            working_dir=ale_bench.constants.WORK_DIR,
+        )
+        try:
+            try:
+                container.wait(timeout=ale_bench.constants.VISUALIZE_TIMEOUT)
+            except Exception:
+                raise RuntimeError("Timeout while running the visualization command. Something went wrong.")
+            exit_code = container.attrs["State"]["ExitCode"]
+        finally:
+            container.remove(force=True)
+    if exit_code != 0:
         raise RuntimeError("Failed to run the visualization command. Something went wrong.")
 
 
@@ -970,7 +979,7 @@ def case_iter_func(
 
     if problem_type == ProblemType.BATCH:
         # Run the submission code and generate the output file
-        host_paths_run = setup_paths_batch_run(host_paths_compile, temp_dir, problem_id, case_idx, input_str)
+        host_paths_run = setup_paths_batch_run(host_paths_compile, temp_dir, input_str, f"{problem_id}_{case_idx:06d}_")
         run_volumes = get_batch_run_volumes(host_paths_run, temp_dir)
         run_result = run_batch_run_container(
             code_language, judge_version, time_limit, run_volumes, batch_run_command, result_input_str
@@ -1012,7 +1021,12 @@ def case_iter_func(
         assert isinstance(batch_judge_result, int), "Judge result must be an integer"
         absolute_score = batch_judge_result
     elif problem_type == ProblemType.REACTIVE:
-        host_paths_judge = setup_paths_reactive_judge(host_paths_compile, temp_dir, problem_id, case_idx, input_str)
+        host_paths_judge = setup_paths_reactive_judge(
+            host_paths_compile,
+            temp_dir,
+            input_str,
+            f"{problem_id}_{case_idx:06d}_",
+        )
         judge_volumes = get_reactive_judge_volumes(host_paths_judge, temp_dir, tool_dir)
         reactive_judge_result = run_reactive_judge_container(
             code_language,
@@ -1067,7 +1081,7 @@ def case_iter_func(
     local_visualization = None
     if not skip_local_visualization and problem_id not in ale_bench.constants.NO_LOCAL_VIS:
         # Run the local visualization command in the Docker container
-        host_paths_vis = setup_paths_vis(host_paths_judge, temp_dir, problem_id, case_idx)
+        host_paths_vis = setup_paths_vis(host_paths_judge, temp_dir, problem_id, f"{problem_id}_{case_idx:06d}_")
         vis_volumes = get_vis_volumes(host_paths_vis, tool_dir)
         run_vis_container(vis_command, vis_volumes)
         # Read the local visualization SVG or HTML
