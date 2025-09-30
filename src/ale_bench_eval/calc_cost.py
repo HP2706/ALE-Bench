@@ -18,13 +18,23 @@ FALLBACK_DICT = {
         input_mtok=Decimal(15),
         cache_write_mtok=Decimal(1875) / Decimal(100),
         cache_read_mtok=Decimal(15) / Decimal(10),
-        output_mtok=Decimal(750) / Decimal(10),
+        output_mtok=Decimal(75),
     ),
     "claude-opus-4.1": ModelPrice(
         input_mtok=Decimal(15),
         cache_write_mtok=Decimal(1875) / Decimal(100),
         cache_read_mtok=Decimal(15) / Decimal(10),
-        output_mtok=Decimal(75) / Decimal(10),
+        output_mtok=Decimal(75),
+    ),
+    "claude-sonnet-4.5": ModelPrice(
+        input_mtok=TieredPrices(base=Decimal(3), tiers=[Tier(start=200000, price=Decimal(6))]),
+        cache_write_mtok=TieredPrices(
+            base=Decimal(375) / Decimal(100), tiers=[Tier(start=200000, price=Decimal(75) / Decimal(10))]
+        ),
+        cache_read_mtok=TieredPrices(
+            base=Decimal(3) / Decimal(10), tiers=[Tier(start=200000, price=Decimal(6) / Decimal(10))]
+        ),
+        output_mtok=TieredPrices(base=Decimal(15), tiers=[Tier(start=200000, price=Decimal(225) / Decimal(10))]),
     ),
     "deepseek-v3.1": ModelPrice(input_mtok=Decimal(56) / Decimal(100), output_mtok=Decimal(168) / Decimal(100)),
     "deepseek-r1-0528": ModelPrice(input_mtok=Decimal(79) / Decimal(100), output_mtok=Decimal(4)),
