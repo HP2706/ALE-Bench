@@ -1,18 +1,18 @@
 {
-    "model_name": "qwen/qwen3-next-80b-a3b-thinking",
+    "model_name": "deepseek/deepseek-v3.1-terminus",
     "provider": "openrouter",
     "settings": {
         "temperature": 0.6,
-        "max_tokens": 81920,
         "top_p": 0.95,
         "extra_body": {
-            "top_k": 20,
-            "min_p": 0.0,
             "provider": {
                 "allow_fallbacks": false,
                 "data_collection": "deny",
-                "order": ["deepinfra/bf16"],
+                "order": ["siliconflow/fp8"],
                 "require_parameters": true
+            },
+            "reasoning": {
+                "enabled": true
             },
             "usage": {
                 "include": true
