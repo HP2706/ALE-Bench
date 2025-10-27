@@ -1,12 +1,12 @@
 [project]
 name = "ale_bench_mcp_server"
-version = "1.1.0"
+version = "1.2.0"
 description = "The MCP server for the ALE-Bench"
 authors = [
     { name = "Yuki-Imajuku", email = "yuki.imjk@gmail.com" }
 ]
 readme = "README.md"
-requires-python = ">=3.10,<3.14"
+requires-python = ">=3.10,<3.15"
 license = { file = "LICENSE" }
 keywords = ["benchmark", "algorithmic programming", "atcoder", "AHC", "AI evaluation", "heuristic", "optimization", "estimation", "MCP", "server"]
 classifiers = [
@@ -14,6 +14,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
@@ -37,15 +38,15 @@ Repository = "https://github.com/SakanaAI/ALE-Bench"
 
 [project.optional-dependencies]
 dev = [
-    "mypy==1.15.0",
-    "pytest==8.3.4",
-    "pytest-mock==3.14.0",
-    "ruff==0.9.7",
-    "types-requests==2.32.0.20250301",
+    "mypy==1.17.1",
+    "pytest==8.4.2",
+    "pytest-mock==3.15.0",
+    "ruff==0.12.12",
+    "types-requests==2.32.4.20250809",
 ]
 
 [tool.uv.sources]
-ale-bench = { git = "https://github.com/SakanaAI/ALE-Bench.git", tag = "v1.1.0" }
+ale-bench = { git = "https://github.com/SakanaAI/ALE-Bench.git", tag = "v1.3.0" }
 
 [tool.mypy]
 warn_return_any = true
@@ -60,12 +61,6 @@ warn_unused_ignores = true
 warn_no_return = true
 warn_unreachable = true
 ignore_missing_imports = true
-
-[tool.pytest.ini_options]
-markers = [
-    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
-    "docker: marks tests as docker (deselect with '-m \"not docker\"')",
-]
 
 [tool.ruff]
 fix = true
@@ -88,7 +83,7 @@ ignore = ["C901"]
 [tool.ruff.lint.isort]
 case-sensitive = true
 combine-as-imports = true
-default-section = "first-party"
+default-section = "third-party"
 known-first-party = ["ale_bench"]
 section-order = [
     "future",

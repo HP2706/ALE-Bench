@@ -49,9 +49,11 @@ uv run mcp dev server.py --with-editable .  # For development
 
 ## Available Tools
 The MCP server provides tools that wrap the core functionalities of the `Session` object. You can use these tools to perform actions like:
-- **Session Management:** `start_session`, `close_session`, `list_current_sessions`
-- **Problem Information:** `list_problem_ids`, `get_problem`, `get_public_seeds`
-- **Evaluation:** `public_eval`, `private_eval`, `case_eval`, `case_gen_eval`
-- **Visualization:** `case_vis`, `case_gen_vis`
+- **Health Check:** `check_app`
+- **Session Management:** `start_session`, `close_session`, `list_current_sessions`, `get_remaining_time`, `get_visualization_server_port`
+- **Problem Information:** `list_problem_ids`, `get_problem`, `get_public_seeds`, `get_rust_tool_source`, `case_gen`
+- **Code Execution:** `code_run`
+- **Evaluation:** `case_eval`, `case_gen_eval`, `public_eval`, `private_eval`
+- **Visualization:** `case_vis`, `case_gen_vis`, `local_visualization`
 
 For detailed information on the parameters and behavior of these functions, please refer to the [Session Object documentation](./session_object.md) or the [server implementation](../mcp/server.py).
