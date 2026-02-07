@@ -101,7 +101,8 @@ def _generate_inputs_modal(seeds: list[int], gen_kwargs: dict[str, Any], tool_di
     seeds_content = "\n".join(str(s) for s in seeds) + "\n"
     backend.write_file(ale_bench.constants.SEEDS_FILE, seeds_content)
 
-    # Create working dirs
+    # Clean and create working dirs (previous runs may have left files)
+    backend.exec_command(f"rm -rf {ale_bench.constants.IN_DIR}", timeout=10)
     backend.mkdir(ale_bench.constants.IN_DIR)
 
     # Build and run command

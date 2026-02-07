@@ -1187,6 +1187,118 @@ def case_iter_func(
     )
 
 
+def _run_all_cases_single_exec(
+    inputs: list[str],
+    run_command: str,
+    judge_command: str,
+    time_limit: float,
+    memory_limit: int,
+    return_details: bool,
+    backend: ModalBackend,
+) -> list[dict]:
+    """Run all BATCH cases in a single sandbox exec (1 round-trip for N cases).
+
+    Creates per-case directories, writes all inputs, runs all cases + judges
+    inside a single shell script, and returns JSON results.
+    """
+    import json as _json
+
+    n = len(inputs)
+
+    # Write all input files in one round-trip using per-case dirs
+    files_to_write = {}
+    for i, inp in enumerate(inputs):
+        case_dir = f"/tmp/cases/{i:06d}"
+        files_to_write[f"{case_dir}/input.txt"] = inp
+        files_to_write[f"{case_dir}/output.txt"] = ""
+        files_to_write[f"{case_dir}/profiles.json"] = ""
+    backend.write_files(files_to_write)
+
+    # Build a shell script that runs all cases sequentially inside the sandbox
+    # For each case: substitute paths, run, judge, collect results
+    # We use per-case dirs to avoid file conflicts
+    inp_path = ale_bench.constants.INPUT_FILE    # /tmp/input.txt
+    out_path = ale_bench.constants.OUTPUT_FILE   # /tmp/output.txt
+    prof_path = ale_bench.constants.PROFILES_FILE  # /tmp/profiles.json
+
+    # The run_command and judge_command reference the constant paths.
+    # We'll copy per-case input into the constant path, run, then copy results back.
+    script_lines = [
+        '#!/bin/sh',
+        'echo "["',
+    ]
+    for i in range(n):
+        case_dir = f"/tmp/cases/{i:06d}"
+        comma = ',' if i > 0 else ''
+        script_lines.append(f'# Case {i}')
+        script_lines.append(f'cp {case_dir}/input.txt {inp_path}')
+        script_lines.append(f': > {out_path}')
+        script_lines.append(f': > {prof_path}')
+        # Run the program
+        script_lines.append(f'START_NS=$(date +%s%N 2>/dev/null || echo 0)')
+        script_lines.append(f'cd {ale_bench.constants.WORK_DIR} && {run_command}')
+        script_lines.append(f'RUN_EXIT=$?')
+        script_lines.append(f'END_NS=$(date +%s%N 2>/dev/null || echo 0)')
+        # Judge
+        script_lines.append(f'JUDGE_STDERR=$({judge_command} 2>&1 1>/dev/null)')
+        script_lines.append(f'JUDGE_EXIT=$?')
+        # Copy results back to per-case dir
+        script_lines.append(f'cp {out_path} {case_dir}/output.txt')
+        script_lines.append(f'cp {prof_path} {case_dir}/profiles.json')
+        # Output JSON for this case
+        script_lines.append(
+            f'echo "{comma}{{' +
+            f'\\"run_exit\\": $RUN_EXIT, ' +
+            f'\\"judge_exit\\": $JUDGE_EXIT, ' +
+            f'\\"start_ns\\": $START_NS, ' +
+            f'\\"end_ns\\": $END_NS, ' +
+            f'\\"judge_stderr\\": \\"$(echo "$JUDGE_STDERR" | tail -1 | sed \'s/"/\\\\\\\\"/g\')\\"' +
+            f'}}"'
+        )
+    script_lines.append('echo "]"')
+    script = '\n'.join(script_lines)
+
+    # Write and execute the script in one exec
+    backend.write_file("/tmp/_run_all.sh", script)
+    exit_code, stdout, stderr = backend.exec_command(
+        "sh /tmp/_run_all.sh",
+        workdir=ale_bench.constants.WORK_DIR,
+        timeout=int((time_limit + 5) * n + 60),
+    )
+
+    # Parse the JSON output
+    try:
+        raw_results = _json.loads(stdout)
+    except _json.JSONDecodeError:
+        logger.error(f"Failed to parse batch results JSON. stdout={stdout[:500]}, stderr={stderr[:500]}")
+        raise RuntimeError(f"Failed to parse batch results: {stdout[:200]}")
+
+    # Batch read all profiles and (optionally) outputs
+    profiles_paths = [f"/tmp/cases/{i:06d}/profiles.json" for i in range(n)]
+    if return_details:
+        output_paths = [f"/tmp/cases/{i:06d}/output.txt" for i in range(n)]
+        all_reads = backend.read_files(profiles_paths + output_paths)
+        profiles_contents = all_reads[:n]
+        output_contents = all_reads[n:]
+    else:
+        profiles_contents = backend.read_files(profiles_paths)
+        output_contents = [None] * n
+
+    # Assemble results
+    results = []
+    for i in range(n):
+        results.append({
+            "run_exit": raw_results[i]["run_exit"],
+            "judge_exit": raw_results[i]["judge_exit"],
+            "judge_stderr": raw_results[i]["judge_stderr"],
+            "start_ns": raw_results[i].get("start_ns", 0),
+            "end_ns": raw_results[i].get("end_ns", 0),
+            "profiles": profiles_contents[i],
+            "output": output_contents[i],
+        })
+    return results
+
+
 def _run_cases_modal(
     inputs: list[str],
     code: str,
@@ -1216,7 +1328,14 @@ def _run_cases_modal(
     reactive_judge_command = build_reactive_judge_command(code_language, judge_version, time_limit)
     vis_command = build_vis_command()
 
-    # Run cases sequentially (Modal sandbox is shared, can't parallelize)
+    # For BATCH problems with multiple cases and no vis, use the optimized single-exec path
+    if problem_type == ProblemType.BATCH and len(inputs) > 1 and skip_local_visualization:
+        return _run_cases_modal_batch_optimized(
+            inputs, time_limit, memory_limit, problem_id,
+            return_details, batch_run_command, batch_judge_command, backend,
+        )
+
+    # Fallback: sequential per-case execution (for REACTIVE, single case, or vis)
     case_results = []
     for case_idx, input_str in enumerate(inputs):
         case_result = _case_iter_func_modal(
@@ -1227,6 +1346,107 @@ def _run_cases_modal(
             vis_command, backend,
         )
         case_results.append(case_result)
+
+    return case_results
+
+
+def _run_cases_modal_batch_optimized(
+    inputs: list[str],
+    time_limit: float,
+    memory_limit: int,
+    problem_id: str,
+    return_details: bool,
+    run_command: str,
+    judge_command: str,
+    backend: ModalBackend,
+) -> list[CaseResult]:
+    """Optimized batch case runner: all cases in ~3 round-trips instead of N×4."""
+    raw_results = _run_all_cases_single_exec(
+        inputs, run_command, judge_command,
+        time_limit, memory_limit, return_details, backend,
+    )
+
+    case_results = []
+    for i, (input_str, raw) in enumerate(zip(inputs, raw_results)):
+        result_input_str = input_str if return_details else None
+        result_output_str = raw["output"] if return_details else None
+        result_error_str = None
+
+        # Calculate execution time from nanosecond timestamps
+        try:
+            start_ns = int(raw["start_ns"])
+            end_ns = int(raw["end_ns"])
+            execution_time_host = (end_ns - start_ns) / 1e9 if end_ns > start_ns else 0.0
+        except (ValueError, TypeError):
+            execution_time_host = 0.0
+
+        run_exit = raw["run_exit"]
+        if run_exit != 0:
+            if execution_time_host > time_limit:
+                case_results.append(CaseResult(
+                    input_str=result_input_str, output_str=None,
+                    error_str=None,
+                    judge_result=JudgeResult.TIME_LIMIT_EXCEEDED,
+                    message="Time limit exceeded.",
+                    absolute_score=ale_bench.constants.REJECTED_ABSOLUTE_SCORE,
+                    execution_time=min(execution_time_host, time_limit + 0.1),
+                    memory_usage=0,
+                ))
+                continue
+            else:
+                case_results.append(CaseResult(
+                    input_str=result_input_str, output_str=None,
+                    error_str=None,
+                    judge_result=JudgeResult.RUNTIME_ERROR,
+                    message="Runtime error.",
+                    absolute_score=ale_bench.constants.REJECTED_ABSOLUTE_SCORE,
+                    execution_time=execution_time_host,
+                    memory_usage=0,
+                ))
+                continue
+
+        # Parse profiles
+        profiles_result = parse_profiles(
+            time_limit, memory_limit, raw["profiles"],
+            execution_time_host, result_input_str, result_output_str, result_error_str,
+        )
+        if isinstance(profiles_result, CaseResult):
+            case_results.append(profiles_result)
+            continue
+        execution_time, memory_usage = profiles_result
+
+        # Parse judge result
+        judge_stderr = raw["judge_stderr"]
+        if raw["judge_exit"] != 0:
+            case_results.append(CaseResult(
+                input_str=result_input_str, output_str=result_output_str,
+                error_str=result_error_str,
+                judge_result=JudgeResult.WRONG_ANSWER,
+                message=f"Wrong answer.\nStandard error:\n{judge_stderr}",
+                absolute_score=ale_bench.constants.REJECTED_ABSOLUTE_SCORE,
+                execution_time=execution_time_host, memory_usage=0,
+            ))
+            continue
+
+        judge_result = _parse_judge_stderr(
+            judge_stderr, execution_time_host,
+            result_input_str, result_output_str, result_error_str,
+        )
+        if isinstance(judge_result, CaseResult):
+            case_results.append(judge_result)
+            continue
+        absolute_score = judge_result
+
+        case_results.append(CaseResult(
+            input_str=result_input_str,
+            output_str=result_output_str,
+            error_str=result_error_str,
+            judge_result=JudgeResult.ACCEPTED,
+            message="",
+            absolute_score=absolute_score,
+            execution_time=execution_time,
+            memory_usage=memory_usage,
+        ))
 
     return case_results
 

@@ -2,6 +2,7 @@
 
 import base64
 import logging
+import time as _time_mod
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
@@ -80,6 +81,7 @@ class ModalBackend(Backend):
             self.image = get_alebench_modal_image()
             self.sandbox = None
             self._last_verified: float = 0.0  # timestamp of last successful sandbox ping
+            self._io_stats: dict[str, list[float]] = {}  # method -> list of durations
             logger.info("[MODAL] Modal backend initialized")
         except Exception as e:
             logger.error(f"[MODAL] Failed to initialize backend: {e}")
@@ -228,11 +230,33 @@ build_rust_tools_local(Path("{tool_dir}"))
 
     def _mark_verified(self):
         """Mark sandbox as recently verified (call after successful exec)."""
-        import time as _time
-        self._last_verified = _time.monotonic()
+        self._last_verified = _time_mod.monotonic()
+
+    def _record_io(self, method: str, duration: float):
+        """Record an I/O operation duration for stats."""
+        self._io_stats.setdefault(method, []).append(duration)
+
+    def get_io_stats(self) -> dict[str, dict]:
+        """Get I/O timing statistics."""
+        stats = {}
+        for method, durations in self._io_stats.items():
+            stats[method] = {
+                "calls": len(durations),
+                "total": round(sum(durations), 3),
+                "avg": round(sum(durations) / len(durations), 3) if durations else 0,
+                "min": round(min(durations), 3) if durations else 0,
+                "max": round(max(durations), 3) if durations else 0,
+            }
+        stats["_total_io_time"] = round(sum(sum(d) for d in self._io_stats.values()), 3)
+        return stats
+
+    def reset_io_stats(self):
+        """Reset I/O timing statistics."""
+        self._io_stats = {}
 
     def write_file(self, remote_path: str, content: str | bytes) -> None:
         """Write file to sandbox via base64 encoding."""
+        t0 = _time_mod.monotonic()
         sandbox = self._ensure_sandbox()
         parent = str(Path(remote_path).parent)
 
@@ -249,6 +273,7 @@ build_rust_tools_local(Path("{tool_dir}"))
                 stderr = proc.stderr.read() if proc.stderr else ""
                 raise RuntimeError(f"Failed to write empty file {remote_path}: {stderr}")
             self._mark_verified()
+            self._record_io("write_file", _time_mod.monotonic() - t0)
             return
 
         sandbox.exec("/bin/sh", "-c", f"mkdir -p {parent}", timeout=10).wait()
@@ -276,10 +301,12 @@ build_rust_tools_local(Path("{tool_dir}"))
             raise RuntimeError(f"Failed to write file {remote_path}: {stderr}")
 
         self._mark_verified()
+        self._record_io("write_file", _time_mod.monotonic() - t0)
         logger.debug(f"[MODAL] Wrote {len(data)} bytes to {remote_path}")
 
     def read_file(self, remote_path: str) -> str:
         """Read file from sandbox."""
+        t0 = _time_mod.monotonic()
         sandbox = self._ensure_sandbox()
         proc = sandbox.exec("/bin/sh", "-c", f"cat {remote_path}", timeout=30)
         proc.wait()
@@ -288,6 +315,7 @@ build_rust_tools_local(Path("{tool_dir}"))
             stderr = proc.stderr.read() if proc.stderr else ""
             raise RuntimeError(f"Failed to read file {remote_path}: {stderr}")
         self._mark_verified()
+        self._record_io("read_file", _time_mod.monotonic() - t0)
         return stdout
 
     def read_files(self, remote_paths: list[str]) -> list[str]:
@@ -296,6 +324,7 @@ build_rust_tools_local(Path("{tool_dir}"))
             return []
         if len(remote_paths) == 1:
             return [self.read_file(remote_paths[0])]
+        t0 = _time_mod.monotonic()
         sandbox = self._ensure_sandbox()
         import json as _json
         paths_json = _json.dumps(remote_paths)
@@ -307,6 +336,7 @@ build_rust_tools_local(Path("{tool_dir}"))
             stderr = proc.stderr.read() if proc.stderr else ""
             raise RuntimeError(f"Failed to read files: {stderr}")
         self._mark_verified()
+        self._record_io("read_files", _time_mod.monotonic() - t0)
         return _json.loads(stdout)
 
     def write_files(self, files: dict[str, str]) -> None:
@@ -317,29 +347,49 @@ build_rust_tools_local(Path("{tool_dir}"))
             path, content = next(iter(files.items()))
             self.write_file(path, content)
             return
-        sandbox = self._ensure_sandbox()
+        t0 = _time_mod.monotonic()
         import json as _json
         files_json = _json.dumps(files)
-        # Use base64 to avoid escaping issues
-        import base64 as _b64
-        encoded = _b64.b64encode(files_json.encode()).decode()
-        script = (
-            "import json, base64, os; "
-            f"files = json.loads(base64.b64decode('{encoded}')); "
-            "[os.makedirs(os.path.dirname(p), exist_ok=True) or None for p in files]; "
-            "[open(p, 'w').write(c) for p, c in files.items()]"
-        )
-        proc = sandbox.exec("python3", "-c", script, timeout=60)
-        proc.wait()
-        if proc.returncode != 0:
-            stderr = proc.stderr.read() if proc.stderr else ""
-            raise RuntimeError(f"Failed to write files: {stderr}")
+        encoded = base64.b64encode(files_json.encode()).decode()
+
+        # If payload is small enough, use inline exec
+        if len(encoded) < 50000:
+            sandbox = self._ensure_sandbox()
+            script = (
+                "import json, base64, os; "
+                f"files = json.loads(base64.b64decode('{encoded}')); "
+                "[os.makedirs(os.path.dirname(p), exist_ok=True) or None for p in files]; "
+                "[open(p, 'w').write(c) for p, c in files.items()]"
+            )
+            proc = sandbox.exec("python3", "-c", script, timeout=60)
+            proc.wait()
+            if proc.returncode != 0:
+                stderr = proc.stderr.read() if proc.stderr else ""
+                raise RuntimeError(f"Failed to write files: {stderr}")
+        else:
+            # Large payload: upload b64 data via chunks, then decode and write with python
+            self.write_file("/tmp/_batch_files.b64", encoded)
+            sandbox = self._ensure_sandbox()
+            script = (
+                "import json, base64, os\n"
+                "data = open('/tmp/_batch_files.b64').read()\n"
+                "files = json.loads(base64.b64decode(data))\n"
+                "for p in files: os.makedirs(os.path.dirname(p), exist_ok=True)\n"
+                "for p, c in files.items(): open(p, 'w').write(c)\n"
+                "os.remove('/tmp/_batch_files.b64')\n"
+            )
+            proc = sandbox.exec("python3", "-c", script, timeout=120)
+            proc.wait()
+            if proc.returncode != 0:
+                stderr = proc.stderr.read() if proc.stderr else ""
+                raise RuntimeError(f"Failed to write files (large): {stderr}")
         self._mark_verified()
+        self._record_io("write_files", _time_mod.monotonic() - t0)
 
     def list_files(self, remote_path: str, pattern: str = "*") -> list[str]:
         """List files in sandbox directory matching pattern."""
+        t0 = _time_mod.monotonic()
         sandbox = self._ensure_sandbox()
-        # Use find for glob-like matching
         if pattern == "*":
             cmd = f"find {remote_path} -maxdepth 1 -type f | sort"
         else:
@@ -347,12 +397,14 @@ build_rust_tools_local(Path("{tool_dir}"))
         proc = sandbox.exec("/bin/sh", "-c", cmd, timeout=30)
         proc.wait()
         stdout = proc.stdout.read() if proc.stdout else ""
+        self._record_io("list_files", _time_mod.monotonic() - t0)
         if not stdout.strip():
             return []
         return [line for line in stdout.strip().split("\n") if line]
 
     def file_size(self, remote_path: str) -> int:
         """Get file size in sandbox."""
+        t0 = _time_mod.monotonic()
         sandbox = self._ensure_sandbox()
         proc = sandbox.exec("/bin/sh", "-c", f"stat -c%s {remote_path}", timeout=10)
         proc.wait()
@@ -360,15 +412,19 @@ build_rust_tools_local(Path("{tool_dir}"))
         if proc.returncode != 0:
             stderr = proc.stderr.read() if proc.stderr else ""
             raise RuntimeError(f"Failed to stat {remote_path}: {stderr}")
+        self._record_io("file_size", _time_mod.monotonic() - t0)
         return int(stdout.strip())
 
     def mkdir(self, remote_path: str) -> None:
         """Create directory in sandbox."""
+        t0 = _time_mod.monotonic()
         sandbox = self._ensure_sandbox()
         sandbox.exec("/bin/sh", "-c", f"mkdir -p {remote_path}", timeout=10).wait()
+        self._record_io("mkdir", _time_mod.monotonic() - t0)
 
     def exec_command(self, command: str, workdir: str | None = None, timeout: int = 3600) -> tuple[int, str, str]:
         """Execute command in sandbox."""
+        t0 = _time_mod.monotonic()
         sandbox = self._ensure_sandbox()
 
         if workdir:
@@ -386,11 +442,14 @@ build_rust_tools_local(Path("{tool_dir}"))
         exit_code = proc.returncode
 
         self._mark_verified()
-        logger.debug(f"[MODAL] exec_command exit={exit_code} cmd={command[:100]}...")
+        duration = _time_mod.monotonic() - t0
+        self._record_io("exec_command", duration)
+        logger.debug(f"[MODAL] exec_command exit={exit_code} t={duration:.2f}s cmd={command[:80]}...")
         return (exit_code, stdout, stderr)
 
     def setup_tool_links(self, tool_dir: str) -> None:
         """Create symlinks so judge binaries are at /judge/target/release/."""
+        t0 = _time_mod.monotonic()
         sandbox = self._ensure_sandbox()
         cmd = f"mkdir -p /judge/target/release && ln -sf {tool_dir}/tools/target/release/gen /judge/target/release/gen && ln -sf {tool_dir}/tools/target/release/tester /judge/target/release/tester && ln -sf {tool_dir}/tools/target/release/vis /judge/target/release/vis"
         proc = sandbox.exec("/bin/sh", "-c", cmd, timeout=10)
@@ -398,6 +457,7 @@ build_rust_tools_local(Path("{tool_dir}"))
         if proc.returncode != 0:
             stderr = proc.stderr.read() if proc.stderr else ""
             logger.warning(f"[MODAL] setup_tool_links failed: {stderr}")
+        self._record_io("setup_tool_links", _time_mod.monotonic() - t0)
 
     def run_container(
         self,
