@@ -2,36 +2,34 @@ from __future__ import annotations
 
 import base64
 import io
+import logging
 import os
 import random
 import shutil
 import socket
+import subprocess
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Literal
 
-import cairosvg
+# Set up logging for debugging
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+try:
+    import cairosvg
+    HAS_CAIRO = True
+except (ImportError, OSError):
+    HAS_CAIRO = False
+    cairosvg = None  # type: ignore
+
 import docker
 from PIL import Image
 from ahocorapy.keywordtree import KeywordTree
 
 from ale_bench.constants import DEFAULT_CACHE_DIR
-
-
-# Docker
-@contextmanager
-def docker_client() -> Generator[docker.DockerClient, None, None]:
-    """Context manager for Docker client.
-
-    Yields:
-        docker.DockerClient: The Docker client.
-    """
-    client = docker.from_env()
-    try:
-        yield client
-    finally:
-        client.close()
+import modal
 
 
 # Cache
@@ -286,14 +284,20 @@ def read_svg(svg_text: str, size: int | tuple[int, int] = 1000) -> Image.Image:
 
     Raises:
         ValueError: If the SVG text is empty.
+        RuntimeError: If cairosvg is not available.
     """
+    if not HAS_CAIRO:
+        raise RuntimeError(
+            "cairosvg is not available. Install cairo library: "
+            "brew install cairo (macOS) or apt-get install libcairo2 (Linux)"
+        )
     if len(svg_text) == 0:
         raise ValueError("SVG text is empty.")
     if isinstance(size, int):
         size = (size, size)
     width, height = size
     buffer = io.BytesIO()
-    cairosvg.svg2png(
+    cairosvg.svg2png(  # type: ignore
         bytestring=svg_text.encode("utf-8"),
         output_width=width,
         output_height=height,

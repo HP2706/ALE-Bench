@@ -6,8 +6,10 @@ import math
 import os
 import warnings
 from pathlib import Path
+from typing import Literal
 
-from ale_bench.data import build_rust_tools, list_problem_ids, load_problem
+from ale_bench.backends import Backend, DockerBackend, ModalBackend
+from ale_bench.data import build_rust_tools, build_rust_tools_local, list_problem_ids, load_problem
 from ale_bench.error import AleBenchError
 from ale_bench.result import ResourceUsage
 from ale_bench.session import Session
@@ -16,6 +18,7 @@ from ale_bench.utils import find_free_port, get_cache_dir
 
 def start(
     problem_id: str,
+    backend: Literal["modal", "docker"] = "modal",
     lite_version: bool = False,
     use_same_time_scale: bool = False,
     maximum_num_case_gen: int = int(1e18),
@@ -31,6 +34,9 @@ def start(
 
     Args:
         problem_id (str): The ID of the problem to start a session for.
+        backend (Literal["modal", "docker"], optional): Execution backend to use. Defaults to "modal".
+            - "modal": Use Modal Sandbox with persistent volumes (recommended)
+            - "docker": Use local Docker containers
         lite_version (bool): Whether to use the lite version. Defaults to False.
         use_same_time_scale (bool, optional): Whether to use the same time scale for the simulation. Defaults to False.
         maximum_num_case_gen (int, optional): Maximum number of generated cases. Defaults to 1e18.
@@ -55,16 +61,26 @@ def start(
     if not cache_dir.is_dir():
         print(f"Creating cache directory: {cache_dir}")
         cache_dir.mkdir(parents=True)
-
+    
     # Check if the problem ID exists
     if problem_id not in list_problem_ids(lite_version=lite_version):
         raise AleBenchError(f"Problem ID {problem_id} not found.")
 
-    # Load the dataset
-    problem, seeds, standings, rank_performance_map, data_root = load_problem(problem_id, lite_version)
-
-    # Build the Rust tools
-    build_rust_tools(data_root / "tools")
+    # Create backend instance
+    if backend == "modal":
+        backend_instance = ModalBackend()
+        # Load the dataset remotely in the sandbox
+        problem, seeds, standings, rank_performance_map, data_root = backend_instance.load_problem(problem_id, lite_version)
+        # Build the Rust tools using the selected backend
+        backend_instance.build_rust_tools(problem_id, data_root / "tools")
+    
+    elif backend == "docker":
+        backend_instance = DockerBackend()
+        # Load the dataset locally
+        problem, seeds, standings, rank_performance_map, data_root = load_problem(problem_id, lite_version)
+        # Build the Rust tools using the selected backend
+        build_rust_tools(data_root / "tools", backend=backend_instance)
+    
 
     # Set maximum resource usage if not provided
     num_call_public_eval = (
@@ -87,6 +103,8 @@ def start(
 
     # Set the visualization server port if not provided
     if run_visualization_server:
+        if backend == "modal":
+            raise NotImplementedError("Visualization server is not supported for Modal backend yet.")
         if visualization_server_port is None:
             visualization_server_port = find_free_port(min_port=9000, max_port=65535)
     else:
@@ -102,6 +120,7 @@ def start(
         standings=standings,
         rank_performance_map=rank_performance_map,
         tool_dir=data_root,
+        backend=backend_instance,
         use_same_time_scale=use_same_time_scale,
         maximum_resource_usage=maximum_resource_usage,
         session_duration=session_duration,
@@ -114,6 +133,7 @@ def start(
 
 def restart(
     session_saved_file: str | os.PathLike[str],
+    backend: Literal["modal", "docker"] = "modal",
     num_workers: int | None = None,
     visualization_server_port: int | None = None,
 ) -> Session:
@@ -121,6 +141,7 @@ def restart(
 
     Args:
         session_saved_file (str | os.PathLike[str]): The path to the saved session file.
+        backend (Literal["modal", "docker"], optional): Execution backend to use. Defaults to "modal".
         num_workers (int, optional): The number of workers to run the judge in parallel. Defaults to 1.
         visualization_server_port (int | None, optional): The port for the visualization server. Defaults to None.
             If None, the port from the saved session will be used if saved session used the visualization server.
@@ -134,13 +155,21 @@ def restart(
     """
     session_data = json.loads(Path(session_saved_file).read_text())
 
+    # Create backend instance
+    if backend == "modal":
+        backend_instance = ModalBackend()
+    elif backend == "docker":
+        backend_instance = DockerBackend()
+    else:
+        raise AleBenchError(f"Unknown backend: {backend}. Must be 'modal' or 'docker'.")
+
     # Load the dataset
     problem, seeds, standings, rank_performance_map, data_root = load_problem(
         session_data["problem_id"], session_data["lite_version"]
     )
 
-    # Build the Rust tools
-    build_rust_tools(data_root / "tools")
+    # Build the Rust tools using the selected backend
+    build_rust_tools(data_root / "tools", backend=backend_instance)
 
     # Check the `num_workers` argument and warn if it is different from the saved session
     if num_workers is None:
@@ -166,6 +195,7 @@ def restart(
         standings=standings,
         rank_performance_map=rank_performance_map,
         tool_dir=data_root,
+        backend=backend_instance,
         use_same_time_scale=session_data["use_same_time_scale"],
         maximum_resource_usage=ResourceUsage.model_validate(session_data["maximum_resource_usage"]),
         session_duration=dt.timedelta(seconds=session_data["session_duration"]),

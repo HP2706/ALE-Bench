@@ -14,12 +14,12 @@ from PIL import Image
 from docker.errors import NotFound
 
 import ale_bench.constants
+from ale_bench.backends import Backend
 from ale_bench.code_language import CodeLanguage, JudgeVersion
 from ale_bench.data import Problem, RankPerformanceMap, Standings, start_visualization_server
 from ale_bench.error import AleBenchError
 from ale_bench.result import CaseResult, CodeRunResult, ResourceUsage, Result
 from ale_bench.tool_wrappers import generate_inputs, local_visualization, run_cases, run_code
-from ale_bench.utils import docker_client
 
 
 class AleBenchFunction(str, Enum):
@@ -55,6 +55,7 @@ class Session:
         standings: Standings,
         rank_performance_map: RankPerformanceMap,
         tool_dir: Path,
+        backend: Backend,
         use_same_time_scale: bool,
         maximum_resource_usage: ResourceUsage,
         session_duration: dt.timedelta,
@@ -71,6 +72,7 @@ class Session:
             standings (Standings): The standings for the session.
             rank_performance_map (RankPerformanceMap): The rank performance map for the session.
             tool_dir (Path): The directory for the tools.
+            backend (Backend): Execution backend (Modal or Docker).
             use_same_time_scale (bool): Whether to use the same time scale for simulating the contest.
             maximum_resource_usage (ResourceUsage): The maximum resource usage for the session.
             session_duration (dt.timedelta): The duration of the session.
@@ -89,6 +91,7 @@ class Session:
         self._standings = standings
         self._rank_performance_map = rank_performance_map
         self._tool_dir = tool_dir
+        self._backend = backend
         self._use_same_time_scale = use_same_time_scale
         self._maximum_resource_usage = maximum_resource_usage
         self._session_duration = session_duration
@@ -100,17 +103,18 @@ class Session:
         self._action_log: list[str] = []
         self._last_public_eval_time = dt.datetime(1970, 1, 1, tzinfo=dt.timezone.utc)
         self._last_private_eval_time = dt.datetime(1970, 1, 1, tzinfo=dt.timezone.utc)
-
-        self._public_inputs = generate_inputs(public_seeds, {}, tool_dir)
+        
+        self._public_inputs = generate_inputs(public_seeds, {}, tool_dir, backend)
         if len(self._public_inputs) != len(public_seeds):
             raise AleBenchError("Failed to initialize: generating public inputs failed.")
-        self._private_inputs = generate_inputs(private_seeds, {}, tool_dir)
+        self._private_inputs = generate_inputs(private_seeds, {}, tool_dir, backend)
         if len(self._private_inputs) != len(private_seeds):
             raise AleBenchError("Failed to initialize: generating private inputs failed.")
 
         # Start the visualization server if needed
         self._visualization_server_container_id = None
         if visualization_server_port is not None:
+            raise NotImplementedError("Visualization server is not supported for Modal backend yet.")
             try:
                 self._visualization_server_container_id = start_visualization_server(
                     visualization_server_dir=tool_dir / "visualization_server",
@@ -166,6 +170,7 @@ class Session:
         if not self._check_within_resource_usage_before(AleBenchFunction.CODE_RUN):
             raise AleBenchError("The resource usage is exceeded.")
         elapsed_time = (dt.datetime.now(tz=dt.timezone.utc) - self._session_started_at).total_seconds()
+        
         (input_list, code, code_language, judge_version, time_limit, memory_limit) = self._check_run_cases_arguments(
             input_str=input_str,
             allow_empty_input=True,
@@ -185,6 +190,7 @@ class Session:
             stdin=input_list[0],
             time_limit=time_limit,
             memory_limit=memory_limit,
+            backend=self._backend,
         )
 
         # Resource usage update (execution time only)
@@ -238,7 +244,7 @@ class Session:
         seed, gen_kwargs = self._check_input_generation_arguments(seed=seed, gen_kwargs=gen_kwargs)
 
         # Generation
-        generated_cases = generate_inputs(seed, gen_kwargs, self._tool_dir)
+        generated_cases = generate_inputs(seed, gen_kwargs, self._tool_dir, self._backend)
 
         # Postprocessing
         if len(generated_cases) == 0:
@@ -325,6 +331,7 @@ class Session:
             return_details=True,
             skip_local_visualization=skip_local_visualization,
             num_workers=self.num_workers,
+            backend=self._backend,
         )
 
         # Postprocessing
@@ -521,6 +528,7 @@ class Session:
             return_details=True,
             skip_local_visualization=skip_local_visualization,
             num_workers=self.num_workers,
+            backend=self._backend,
         )
 
         # Postprocessing
@@ -602,6 +610,7 @@ class Session:
             return_details=False,
             skip_local_visualization=True,
             num_workers=self.num_workers,
+            backend=self._backend,
         )
 
         # Postprocessing
@@ -694,17 +703,31 @@ class Session:
         shutil.rmtree(self._tool_dir, ignore_errors=True)
         if self._visualization_server_container_id is not None:
             print("Stopping the visualization server...")
-            with docker_client() as client:
-                try:
-                    visualization_server_container = client.containers.get(self._visualization_server_container_id)
+            # Note: Visualization server handling needs backend-specific implementation
+            # For now, skip visualization server cleanup for Modal (TODO: implement)
+            try:
+                from ale_bench.backends import DockerBackend
+                if isinstance(self._backend, DockerBackend):
+                    # Docker-specific visualization server cleanup
+                    visualization_server_container = self._backend.client.containers.get(
+                        self._visualization_server_container_id
+                    )
                     visualization_server_container.stop()
                     visualization_server_container.remove(force=True)
-                except NotFound:
-                    print("Visualization server container not found.")
-            print("Visualization server stopped.")
+                    print("Visualization server stopped.")
+            except NotFound:
+                print("Visualization server container not found.")
+            except Exception as e:
+                print(f"Error stopping visualization server: {e}")
+
             self._run_visualization_server = False
             self._visualization_server_port = None
             self._visualization_server_container_id = None
+
+        # Clean up backend resources
+        if hasattr(self, '_backend') and self._backend:
+            print("Closing backend...")
+            self._backend.close()
 
     # Properties
     @property

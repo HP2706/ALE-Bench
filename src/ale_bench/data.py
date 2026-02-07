@@ -5,6 +5,7 @@ import json
 import math
 import os
 import shutil
+import subprocess
 import tempfile
 import zipfile
 from copy import deepcopy
@@ -18,8 +19,9 @@ from huggingface_hub import hf_hub_download
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 
 import ale_bench.constants
+from ale_bench.backends import Backend
 from ale_bench.result import JudgeResult, Result
-from ale_bench.utils import docker_client, get_cache_dir, get_local_data_dir, read_svg
+from ale_bench.utils import get_cache_dir, get_local_data_dir, read_svg
 
 
 class ProblemType(str, Enum):
@@ -512,7 +514,9 @@ def load_problem(problem_id: str, lite_version: bool) -> tuple[Problem, Seeds, S
         data_path = str(local_data_dir / f"{problem_id}.zip")
 
     # Create the temporary directory and extract the problem zip data
-    data_root = Path(tempfile.mkdtemp())
+    data_root = Path(f'/root/.cache/ale-bench/problem_data/{problem_id}')
+    data_root.mkdir(parents=True, exist_ok=True)
+    print("line 518 data_root", data_root)
     with zipfile.ZipFile(data_path, "r") as zf:
         zf.extractall(data_root)
     shutil.copytree(data_root / problem_id, data_root, copy_function=shutil.move, dirs_exist_ok=True)
@@ -614,35 +618,105 @@ def load_problem(problem_id: str, lite_version: bool) -> tuple[Problem, Seeds, S
     return problem, seeds, standings, rank_performance_map, data_root
 
 
-def build_rust_tools(tool_cache_dir: Path) -> None:
-    """Build the Rust tools.
+def build_rust_tools_local(tool_cache_dir: Path) -> None:
+    """
+
+    Args:
+        tool_cache_dir (Path): _description_
+    """
+    all_tools_exist = True
+    for tool in ["gen", "tester", "vis"]:
+        path = tool_cache_dir / "src" / "bin" / f"{tool}.rs"
+        if not path.is_file():
+            continue  # Tool source doesn't exist, skip check
+        tool_path = tool_cache_dir / "target" / "release" / tool
+        if not (tool_path.is_file() and tool_path.stat().st_size > 0):
+            all_tools_exist = False
+            break
+        
+    if all_tools_exist:
+        return
+
+    import subprocess
+    process = subprocess.Popen(
+        ["cargo", "build", "--release"],
+        cwd=tool_cache_dir,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env={
+            **os.environ,
+            "RUSTFLAGS": "-Awarnings",
+        },
+    )
+    stdout, stderr = process.communicate()
+    if process.returncode != 0:
+        print("STDOUT:")
+        print(stdout.decode())
+        print("STDERR:")
+        print(stderr.decode())
+        raise RuntimeError(f"cargo build failed with exit code {process.returncode}")
+    print("STDOUT:")
+    print(stdout.decode())
+    print("STDERR:")
+    print(stderr.decode())
+    
+    
+    # Check if the build was successful
+    for tool in ["gen", "tester", "vis"]:
+        if not (tool_cache_dir / "src" / "bin" / f"{tool}.rs").is_file():
+            continue
+        tool_path = tool_cache_dir / "target" / "release" / tool
+        assert tool_path.is_file() and tool_path.stat().st_size > 0, f"Failed to build the {tool} tool."
+
+
+
+def build_rust_tools(tool_cache_dir: Path, backend: Backend) -> None:
+    """Build the Rust tools using the specified backend.
 
     Args:
         tool_cache_dir (Path): Directory containing the Rust tools. Cargo.toml must be in the root directory.
-
+        backend (Backend): Execution backend to use for building
+    
     Raises:
         RuntimeError: If the build fails.
     """
-    with docker_client() as client:
-        build_container = client.containers.run(
-            image=ale_bench.constants.RUST_TOOL_DOCKER_IMAGE,
-            command="cargo build --release",
-            remove=False,
-            auto_remove=False,
-            detach=True,
-            environment={"RUSTFLAGS": "-Awarnings"},
-            group_add=[os.getgid()],
-            user=os.getuid(),
-            volumes={str(tool_cache_dir): {"bind": ale_bench.constants.WORK_DIR, "mode": "rw"}},
-            working_dir=ale_bench.constants.WORK_DIR,
-        )
-        try:
-            build_container.wait()
-            # Check if the build was successful
-            if build_container.attrs["State"]["ExitCode"] != 0:
-                raise RuntimeError("Failed to build the Rust tool.")
-        finally:
-            build_container.remove(force=True)
+    # Check if tools are already built
+    all_tools_exist = True
+    for tool in ["gen", "tester", "vis"]:
+        path = tool_cache_dir / "src" / "bin" / f"{tool}.rs"
+        if not path.is_file():
+            continue  # Tool source doesn't exist, skip check
+        tool_path = tool_cache_dir / "target" / "release" / tool
+        if not (tool_path.is_file() and tool_path.stat().st_size > 0):
+            all_tools_exist = False
+            break
+
+    if all_tools_exist:
+        return
+
+    # Use backend to build tools
+    build_container = backend.run_container(
+        image=ale_bench.constants.RUST_TOOL_DOCKER_IMAGE,
+        command="cargo build --release",
+        volumes={str(tool_cache_dir): {"bind": ale_bench.constants.WORK_DIR, "mode": "rw"}},
+        working_dir=ale_bench.constants.WORK_DIR,
+        environment={"RUSTFLAGS": "-Awarnings"},
+        detach=True,
+        remove=False,
+    )
+
+    try:
+        build_container.wait()
+        # Check if the build was successful
+        if build_container.attrs["State"]["ExitCode"] != 0:
+            print(" Build container state: ", build_container.attrs["State"])
+            # Get stderr to see the actual error
+            stderr = build_container.logs(stdout=False, stderr=True).decode("utf-8", errors="replace")
+            print(f" Build stderr: {stderr}")
+            raise RuntimeError(f"Failed to build the Rust tool: {stderr}")
+    finally:
+        build_container.remove(force=True)
+
     # Check if the build was successful
     for tool in ["gen", "tester", "vis"]:
         if not (tool_cache_dir / "src" / "bin" / f"{tool}.rs").is_file():
