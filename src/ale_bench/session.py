@@ -700,7 +700,11 @@ class Session:
 
     def close(self) -> None:
         """Close the session and clean up resources."""
-        shutil.rmtree(self._tool_dir, ignore_errors=True)
+        # Only delete tool_dir for Docker backend (temp directory).
+        # For local/modal backends, tool_dir is a persistent cache on a volume.
+        from ale_bench.backends import DockerBackend
+        if isinstance(self._backend, DockerBackend):
+            shutil.rmtree(self._tool_dir, ignore_errors=True)
         if self._visualization_server_container_id is not None:
             print("Stopping the visualization server...")
             # Note: Visualization server handling needs backend-specific implementation

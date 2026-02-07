@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 import ale_bench.constants
 from ale_bench.backends import Backend
+from ale_bench.backends.local_backend import LocalBackend
 from ale_bench.backends.modal_backend import ModalBackend
 from ale_bench.code_language import (
     CodeLanguage,
@@ -1579,7 +1580,7 @@ def run_cases(
     Returns:
         list[CaseResult]: The list of case results.
     """
-    if isinstance(backend, ModalBackend):
+    if isinstance(backend, (ModalBackend, LocalBackend)):
         return _run_cases_modal(
             inputs, code, code_language, judge_version,
             time_limit, memory_limit, problem_id, problem_type,

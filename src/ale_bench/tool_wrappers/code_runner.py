@@ -11,6 +11,7 @@ from requests.exceptions import ConnectionError, Timeout
 
 import ale_bench.constants
 from ale_bench.backends import Backend
+from ale_bench.backends.local_backend import LocalBackend
 from ale_bench.backends.modal_backend import ModalBackend
 from ale_bench.code_language import (
     CodeLanguage,
@@ -469,7 +470,7 @@ def run_code(
     Returns:
         CodeRunResult: The result of the code execution.
     """
-    if isinstance(backend, ModalBackend):
+    if isinstance(backend, (ModalBackend, LocalBackend)):
         return _run_code_modal(
             code=code,
             code_language=code_language,

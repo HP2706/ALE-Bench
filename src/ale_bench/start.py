@@ -8,7 +8,7 @@ import warnings
 from pathlib import Path
 from typing import Literal
 
-from ale_bench.backends import Backend, DockerBackend, ModalBackend
+from ale_bench.backends import Backend, DockerBackend, LocalBackend, ModalBackend
 from ale_bench.data import build_rust_tools, build_rust_tools_local, list_problem_ids, load_problem
 from ale_bench.error import AleBenchError
 from ale_bench.result import ResourceUsage
@@ -18,7 +18,7 @@ from ale_bench.utils import find_free_port, get_cache_dir
 
 def start(
     problem_id: str,
-    backend: Literal["modal", "docker"] = "modal",
+    backend: Literal["modal", "docker", "local"] = "modal",
     lite_version: bool = False,
     use_same_time_scale: bool = False,
     maximum_num_case_gen: int = int(1e18),
@@ -34,9 +34,10 @@ def start(
 
     Args:
         problem_id (str): The ID of the problem to start a session for.
-        backend (Literal["modal", "docker"], optional): Execution backend to use. Defaults to "modal".
+        backend (Literal["modal", "docker", "local"], optional): Execution backend to use. Defaults to "modal".
             - "modal": Use Modal Sandbox with persistent volumes (recommended)
             - "docker": Use local Docker containers
+            - "local": Use local subprocess (fastest, for use inside Modal functions)
         lite_version (bool): Whether to use the lite version. Defaults to False.
         use_same_time_scale (bool, optional): Whether to use the same time scale for the simulation. Defaults to False.
         maximum_num_case_gen (int, optional): Maximum number of generated cases. Defaults to 1e18.
@@ -80,7 +81,13 @@ def start(
         problem, seeds, standings, rank_performance_map, data_root = load_problem(problem_id, lite_version)
         # Build the Rust tools using the selected backend
         build_rust_tools(data_root / "tools", backend=backend_instance)
-    
+
+    elif backend == "local":
+        backend_instance = LocalBackend()
+        # Load the dataset locally
+        problem, seeds, standings, rank_performance_map, data_root = load_problem(problem_id, lite_version)
+        # Build the Rust tools locally via subprocess
+        build_rust_tools_local(data_root / "tools")
 
     # Set maximum resource usage if not provided
     num_call_public_eval = (
@@ -112,6 +119,8 @@ def start(
 
     # Create a new session for the problem
     # NOTE: We only use 5 public seeds and 10% of private seeds for the lite version
+    print("data_root", data_root)
+    
     session = Session(
         problem=problem,
         lite_version=lite_version,
@@ -133,7 +142,7 @@ def start(
 
 def restart(
     session_saved_file: str | os.PathLike[str],
-    backend: Literal["modal", "docker"] = "modal",
+    backend: Literal["modal", "docker", "local"] = "modal",
     num_workers: int | None = None,
     visualization_server_port: int | None = None,
 ) -> Session:
@@ -160,8 +169,10 @@ def restart(
         backend_instance = ModalBackend()
     elif backend == "docker":
         backend_instance = DockerBackend()
+    elif backend == "local":
+        backend_instance = LocalBackend()
     else:
-        raise AleBenchError(f"Unknown backend: {backend}. Must be 'modal' or 'docker'.")
+        raise AleBenchError(f"Unknown backend: {backend}. Must be 'modal', 'docker', or 'local'.")
 
     # Load the dataset
     problem, seeds, standings, rank_performance_map, data_root = load_problem(

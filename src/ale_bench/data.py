@@ -4,6 +4,7 @@ import datetime as dt
 import json
 import math
 import os
+import pickle
 import shutil
 import subprocess
 import tempfile
@@ -501,6 +502,20 @@ def load_problem(problem_id: str, lite_version: bool) -> tuple[Problem, Seeds, S
         the problem object, seeds object, standings object, rank performance map object, and the data root path.
     """
     cache_dir = get_cache_dir()
+
+    # Check for cached parsed problem data (avoids re-extraction which destroys compiled tools)
+    data_root = Path(f'/root/.cache/ale-bench/problem_data/{problem_id}')
+    cache_key = f"{'lite' if lite_version else 'full'}"
+    cached_pickle = data_root / f".problem_cache_{cache_key}.pkl"
+    if cached_pickle.is_file():
+        try:
+            with open(cached_pickle, "rb") as f:
+                cached = pickle.load(f)
+            if (data_root / "tools" / "src").is_dir():
+                return cached["problem"], cached["seeds"], cached["standings"], cached["rank_performance_map"], data_root
+        except Exception:
+            pass
+
     local_data_dir = get_local_data_dir()
     if local_data_dir is None or not (local_data_dir / f"{problem_id}.zip").is_file():
         # Load the problem data from the Hugging Face Hub
@@ -514,9 +529,8 @@ def load_problem(problem_id: str, lite_version: bool) -> tuple[Problem, Seeds, S
         data_path = str(local_data_dir / f"{problem_id}.zip")
 
     # Create the temporary directory and extract the problem zip data
-    data_root = Path(f'/root/.cache/ale-bench/problem_data/{problem_id}')
     data_root.mkdir(parents=True, exist_ok=True)
-    print("line 518 data_root", data_root)
+
     with zipfile.ZipFile(data_path, "r") as zf:
         zf.extractall(data_root)
     shutil.copytree(data_root / problem_id, data_root, copy_function=shutil.move, dirs_exist_ok=True)
@@ -615,6 +629,18 @@ def load_problem(problem_id: str, lite_version: bool) -> tuple[Problem, Seeds, S
         tool_readme=tool_readme,
     )
 
+    # Cache parsed problem data to avoid re-extraction on subsequent calls
+    try:
+        with open(cached_pickle, "wb") as f:
+            pickle.dump({
+                "problem": problem,
+                "seeds": seeds,
+                "standings": standings,
+                "rank_performance_map": rank_performance_map,
+            }, f)
+    except Exception:
+        pass
+
     return problem, seeds, standings, rank_performance_map, data_root
 
 
@@ -633,7 +659,6 @@ def build_rust_tools_local(tool_cache_dir: Path) -> None:
         if not (tool_path.is_file() and tool_path.stat().st_size > 0):
             all_tools_exist = False
             break
-        
     if all_tools_exist:
         return
 

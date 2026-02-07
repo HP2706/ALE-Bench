@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 import ale_bench.constants
 from ale_bench.backends import Backend
+from ale_bench.backends.local_backend import LocalBackend
 from ale_bench.backends.modal_backend import ModalBackend
 from ale_bench.error import AleBenchError
 
@@ -163,7 +164,7 @@ def generate_inputs(seeds: list[int], gen_kwargs: dict[str, Any], tool_dir: Path
     Returns:
         list[str]: The list of generated input cases.
     """
-    if isinstance(backend, ModalBackend):
+    if isinstance(backend, (ModalBackend, LocalBackend)):
         return _generate_inputs_modal(seeds, gen_kwargs, tool_dir, backend)
     else:
         return _generate_inputs_docker(seeds, gen_kwargs, tool_dir, backend)
