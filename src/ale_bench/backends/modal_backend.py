@@ -15,11 +15,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+SANDBOX_REGISTRY = "ale-bench-sandbox-registry"
 
-def get_modal_volume():
-    """Get or create persistent Modal volume for ALE-Bench cache."""
-    volume = modal.Volume.from_name("ale-bench-cache", create_if_missing=True)
-    return volume
+
+
 
 
 def get_alebench_modal_image():
@@ -30,6 +29,7 @@ def get_alebench_modal_image():
         'curl', 'wget', 'git', 'build-essential', 'ca-certificates',
         "gcc-12", "g++-12", "libeigen3-dev", "libgmp-dev", "time",
         "python3.11", "python3.11-dev", 'unzip', 'zip',
+        "libcairo2-dev", "libffi-dev",
     ).run_commands(
         # Boost 1.82
         "wget -q https://sourceforge.net/projects/boost/files/boost/1.82.0/boost_1_82_0.tar.gz/download -O /tmp/boost.tar.gz && "
@@ -47,11 +47,11 @@ def get_alebench_modal_image():
     ).uv_pip_install(
         "numpy", "scipy", "networkx", "sympy", "sortedcontainers",
         "more-itertools", "shapely", "bitarray", "PuLP", "mpmath",
-        "pandas", "z3-solver", "scikit-learn", "ortools", "polars",
+        "pandas", "scikit-learn", "ortools", "polars",
         "lightgbm", "gmpy2", "numba", "ac-library-python", "torch",
         "docker", "Pillow", "huggingface_hub", "pydantic", "ahocorapy",
         "cairosvg", "cloudpickle", "modal",
-    ).run_commands(
+    ).run_commands( # "z3-solver", 
         # Rust
         "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && "
         "export PATH=$HOME/.cargo/bin:$PATH && "
@@ -64,7 +64,7 @@ def get_alebench_modal_image():
     }).add_local_dir(
         local_path="ALE-Bench",
         remote_path="/root/ALE-Bench",
-        copy=False,
+        copy=True,
     )
 
     return image
@@ -73,13 +73,23 @@ def get_alebench_modal_image():
 class ModalBackend(Backend):
     """Native Modal Sandbox backend with persistent volumes."""
 
-    def __init__(self):
-        """Initialize Modal backend with app and volume."""
+    def __init__(self, problem_id: str | None = None, keep_alive: bool = False):
+        """Initialize Modal backend with app and volume.
+
+        Args:
+            problem_id: If provided, the sandbox ID is stored/looked up in a
+                ``modal.Dict`` keyed by problem_id so that separate processes
+                can reconnect to the same sandbox across invocations.
+            keep_alive: When True, ``close()`` detaches the local reference
+                without terminating the remote sandbox.
+        """
         try:
             self.app = modal.App.lookup("ale-bench", create_if_missing=True)
-            self.volume = get_modal_volume()
+            self.volume = modal.Volume.from_name('ale-bench-cache', create_if_missing=True)
             self.image = get_alebench_modal_image()
             self.sandbox = None
+            self._registry_key = problem_id
+            self.keep_alive = keep_alive
             self._last_verified: float = 0.0  # timestamp of last successful sandbox ping
             self._io_stats: dict[str, list[float]] = {}  # method -> list of durations
             logger.info("[MODAL] Modal backend initialized")
@@ -156,9 +166,17 @@ build_rust_tools_local(Path("{tool_dir}"))
                     image=self.image,
                     app=self.app,
                     timeout=3600,
+                    idle_timeout=5*60,
                     volumes={"/root/.cache/ale-bench": self.volume}
                 )
             logger.info("[MODAL] Sandbox created successfully")
+            if self._registry_key:
+                try:
+                    registry = modal.Dict.from_name(SANDBOX_REGISTRY, create_if_missing=True)
+                    registry[self._registry_key] = sandbox.object_id
+                    logger.info(f"[MODAL] Registered sandbox {sandbox.object_id} under key '{self._registry_key}'")
+                except Exception as e:
+                    logger.warning(f"[MODAL] Failed to register sandbox in Dict: {e}")
             return sandbox
         except Exception as e:
             logger.error(f"[MODAL] Failed to create sandbox: {e}")
@@ -168,6 +186,21 @@ build_rust_tools_local(Path("{tool_dir}"))
         """Ensure sandbox exists and is alive, recreate if needed."""
         import time as _time
         if self.sandbox is None:
+            # Try to reconnect to an existing sandbox via the registry
+            if self._registry_key:
+                try:
+                    registry = modal.Dict.from_name(SANDBOX_REGISTRY, create_if_missing=True)
+                    sandbox_id = registry.get(self._registry_key)
+                    if sandbox_id:
+                        self.sandbox = modal.Sandbox.from_id(sandbox_id)
+                        proc = self.sandbox.exec("/bin/sh", "-c", "echo ok", timeout=10)
+                        proc.wait()
+                        self._last_verified = _time.monotonic()
+                        logger.info(f"[MODAL] Reconnected to existing sandbox {sandbox_id}")
+                        return self.sandbox
+                except Exception as e:
+                    logger.info(f"[MODAL] Could not reconnect to sandbox: {e}")
+                    self.sandbox = None
             self.sandbox = self._create_sandbox()
             self._last_verified = _time.monotonic()
         else:
@@ -651,14 +684,42 @@ build_rust_tools_local(Path("{tool_dir}"))
 
     def close(self) -> None:
         """Terminate sandbox and clean up resources."""
-        if self.sandbox:
+        if self.sandbox and not self.keep_alive:
             logger.info("[MODAL] Terminating sandbox")
             try:
                 self.sandbox.terminate()
             except Exception as e:
                 logger.warning(f"[MODAL] Error terminating sandbox: {e}")
             finally:
+                if self._registry_key:
+                    try:
+                        registry = modal.Dict.from_name(SANDBOX_REGISTRY, create_if_missing=True)
+                        registry.pop(self._registry_key, None)
+                    except Exception:
+                        pass
                 self.sandbox = None
+        elif self.sandbox and self.keep_alive:
+            logger.info("[MODAL] Keeping sandbox alive (keep_alive=True)")
+            self.sandbox = None  # detach local reference but don't terminate
+
+    @staticmethod
+    def cleanup_sandbox(problem_id: str):
+        """Terminate a sandbox by problem_id and clean up the registry."""
+        try:
+            registry = modal.Dict.from_name(SANDBOX_REGISTRY, create_if_missing=True)
+            sandbox_id = registry.pop(problem_id, None)
+            if sandbox_id:
+                sb = modal.Sandbox.from_id(sandbox_id)
+                sb.terminate()
+                logger.info(f"[MODAL] Cleaned up sandbox {sandbox_id} for problem '{problem_id}'")
+        except Exception as e:
+            logger.warning(f"[MODAL] Cleanup failed for problem '{problem_id}': {e}")
+        try:
+            registry = modal.Dict.from_name(SANDBOX_REGISTRY)
+            if registry.len() == 0:
+                modal.Dict.delete(SANDBOX_REGISTRY)
+        except Exception:
+            pass
 
 
 class _ModalContainerResult:

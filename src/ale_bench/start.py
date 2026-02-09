@@ -29,6 +29,7 @@ def start(
     num_workers: int = 1,
     run_visualization_server: bool = False,
     visualization_server_port: int | None = None,
+    keep_alive: bool = False,
 ) -> Session:
     """Start a new session for the given problem ID.
 
@@ -69,7 +70,7 @@ def start(
 
     # Create backend instance
     if backend == "modal":
-        backend_instance = ModalBackend()
+        backend_instance = ModalBackend(problem_id=problem_id, keep_alive=keep_alive)
         # Load the dataset remotely in the sandbox
         problem, seeds, standings, rank_performance_map, data_root = backend_instance.load_problem(problem_id, lite_version)
         # Build the Rust tools using the selected backend
