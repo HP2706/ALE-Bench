@@ -4,6 +4,8 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+import ale_bench.constants
+
 
 class Backend(ABC):
     """Abstract backend interface for executing ALE-Bench operations."""
@@ -135,6 +137,16 @@ class Backend(ABC):
             tool_dir: Directory containing built tools (e.g., with tools/target/release/)
         """
         pass
+
+    @property
+    def judge_dir(self) -> str:
+        """Directory where judge binaries (gen, tester, vis) are located."""
+        return ale_bench.constants.JUDGE_DIR
+
+    @property
+    def work_dir(self) -> str:
+        """Directory for code files and working directory during execution."""
+        return ale_bench.constants.WORK_DIR
 
     def __enter__(self):
         """Context manager entry."""

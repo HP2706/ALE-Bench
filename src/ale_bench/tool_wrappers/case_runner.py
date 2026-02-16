@@ -190,10 +190,12 @@ def get_batch_judge_volumes(host_paths: HostPathsBatchJudge, tool_dir: Path) -> 
     }
 
 
-def build_batch_judge_command() -> str:
+def build_batch_judge_command(judge_dir: str | None = None) -> str:
     """Build the judging command."""
+    jd = judge_dir or ale_bench.constants.JUDGE_DIR
+    tester_bin = f"{jd}/target/release/tester"
     judge_command = (
-        f"{ale_bench.constants.TESTER_BIN} {ale_bench.constants.INPUT_FILE} {ale_bench.constants.OUTPUT_FILE}"
+        f"{tester_bin} {ale_bench.constants.INPUT_FILE} {ale_bench.constants.OUTPUT_FILE}"
     )
     return judge_command
 
@@ -259,12 +261,16 @@ def get_reactive_judge_volumes(
     }
 
 
-def build_reactive_judge_command(code_language: CodeLanguage, judge_version: JudgeVersion, time_limit: float) -> str:
+def build_reactive_judge_command(
+    code_language: CodeLanguage, judge_version: JudgeVersion, time_limit: float, judge_dir: str | None = None
+) -> str:
     """Build the run command for the given code language and judge version."""
+    jd = judge_dir or ale_bench.constants.JUDGE_DIR
+    tester_bin = f"{jd}/target/release/tester"
     run_command = get_run_command(code_language, judge_version)
     run_command += f" < {ale_bench.constants.INPUT_FILE} > {ale_bench.constants.OUTPUT_FILE}"
     run_command = (
-        f"{ale_bench.constants.TESTER_BIN} /usr/bin/time "
+        f"{tester_bin} /usr/bin/time "
         f'-f "{ale_bench.constants.TIME_OUTPUT_FORMAT}" '
         f"-o {ale_bench.constants.PROFILES_FILE} {run_command}"
     )
@@ -326,9 +332,11 @@ def get_vis_volumes(host_paths: HostPathsVis, tool_dir: Path) -> dict[str, dict[
     return vis_volumes
 
 
-def build_vis_command() -> str:
+def build_vis_command(judge_dir: str | None = None) -> str:
     """Build the visualization command."""
-    vis_command = f"{ale_bench.constants.VIS_BIN} {ale_bench.constants.INPUT_FILE} {ale_bench.constants.OUTPUT_FILE}"
+    jd = judge_dir or ale_bench.constants.JUDGE_DIR
+    vis_bin = f"{jd}/target/release/vis"
+    vis_command = f"{vis_bin} {ale_bench.constants.INPUT_FILE} {ale_bench.constants.OUTPUT_FILE}"
     return vis_command
 
 
@@ -803,11 +811,12 @@ def _compile_modal(
     code: str,
     code_language: CodeLanguage,
     judge_version: JudgeVersion,
-    backend: ModalBackend,
+    backend: ModalBackend | LocalBackend,
 ) -> CaseResult | None:
     """Compile code in Modal sandbox. Returns CaseResult on failure, None on success."""
+    work_dir = backend.work_dir
     submission_rel = get_submission_file_path(code_language, judge_version)
-    submission_path = f"{ale_bench.constants.WORK_DIR}/{submission_rel}"
+    submission_path = f"{work_dir}/{submission_rel}"
     backend.write_file(submission_path, code)
 
     object_rel = get_object_file_path(code_language, judge_version)
@@ -815,11 +824,11 @@ def _compile_modal(
     backend.write_file(object_path, "")
 
     compile_cmd = get_compile_command(code_language, judge_version)
-    compile_cmd += f"; cp {ale_bench.constants.WORK_DIR}/{object_rel} /tmp/{object_rel}"
+    compile_cmd += f"; cp {work_dir}/{object_rel} /tmp/{object_rel}"
     compile_cmd += f"; chmod 744 /tmp/{object_rel}"
 
     exit_code, _, stderr = backend.exec_command(
-        compile_cmd, workdir=ale_bench.constants.WORK_DIR, timeout=ale_bench.constants.COMPILE_TIMEOUT
+        compile_cmd, workdir=work_dir, timeout=ale_bench.constants.COMPILE_TIMEOUT
     )
 
     object_size = backend.file_size(object_path)
@@ -857,7 +866,7 @@ def _case_iter_func_modal(
     batch_judge_command: str,
     reactive_judge_command: str,
     vis_command: str,
-    backend: ModalBackend,
+    backend: ModalBackend | LocalBackend,
 ) -> CaseResult:
     """Run a single case using Modal backend primitives."""
     result_input_str = input_str if return_details else None
@@ -874,7 +883,7 @@ def _case_iter_func_modal(
         # Run
         start_at = time.perf_counter()
         exit_code, _, run_stderr = backend.exec_command(
-            batch_run_command, workdir=ale_bench.constants.WORK_DIR
+            batch_run_command, workdir=backend.work_dir
         )
         end_at = time.perf_counter()
         execution_time_host = end_at - start_at
@@ -923,7 +932,7 @@ def _case_iter_func_modal(
 
         # Judge - tool links already set up, just run
         judge_exit, _, judge_stderr = backend.exec_command(
-            batch_judge_command, workdir=ale_bench.constants.WORK_DIR
+            batch_judge_command, workdir=backend.work_dir
         )
         judge_stderr = judge_stderr.strip()
 
@@ -954,7 +963,7 @@ def _case_iter_func_modal(
 
         start_at = time.perf_counter()
         exit_code, _, judge_stderr = backend.exec_command(
-            reactive_judge_command, workdir=ale_bench.constants.WORK_DIR
+            reactive_judge_command, workdir=backend.work_dir
         )
         end_at = time.perf_counter()
         execution_time_host = end_at - start_at
@@ -1033,16 +1042,17 @@ def _case_iter_func_modal(
     local_visualization = None
     if not skip_local_visualization and problem_id not in ale_bench.constants.NO_LOCAL_VIS:
         vis_exit, _, vis_stderr = backend.exec_command(
-            vis_command, workdir=ale_bench.constants.WORK_DIR, timeout=ale_bench.constants.VISUALIZE_TIMEOUT
+            vis_command, workdir=backend.work_dir, timeout=ale_bench.constants.VISUALIZE_TIMEOUT
         )
         if vis_exit != 0:
             raise RuntimeError("Failed to run the visualization command. Something went wrong.")
 
-        # Determine which vis output path to read
+        # Determine which vis output path to read (use backend.work_dir for LocalBackend)
+        work_dir = backend.work_dir
         vis_container_path = (
-            ale_bench.constants.LOCAL_VIS_SVG
+            f"{work_dir}/out.svg"
             if problem_id in ale_bench.constants.VIS_SVG_GENERATION
-            else ale_bench.constants.LOCAL_VIS_HTML
+            else f"{work_dir}/vis.html"
         )
         svg_text = backend.read_file(vis_container_path)
         svg_text = svg_text.replace("\n", "").removeprefix("<html><body>").removesuffix("</body></html>")
@@ -1195,7 +1205,7 @@ def _run_all_cases_single_exec(
     time_limit: float,
     memory_limit: int,
     return_details: bool,
-    backend: ModalBackend,
+    backend: ModalBackend | LocalBackend,
 ) -> list[dict]:
     """Run all BATCH cases in a single sandbox exec (1 round-trip for N cases).
 
@@ -1205,6 +1215,7 @@ def _run_all_cases_single_exec(
     import json as _json
 
     n = len(inputs)
+    work_dir = backend.work_dir
 
     # Write all input files in one round-trip using per-case dirs
     files_to_write = {}
@@ -1237,7 +1248,7 @@ def _run_all_cases_single_exec(
         script_lines.append(f': > {prof_path}')
         # Run the program
         script_lines.append(f'START_NS=$(date +%s%N 2>/dev/null || echo 0)')
-        script_lines.append(f'cd {ale_bench.constants.WORK_DIR} && {run_command}')
+        script_lines.append(f'cd {work_dir} && {run_command}')
         script_lines.append(f'RUN_EXIT=$?')
         script_lines.append(f'END_NS=$(date +%s%N 2>/dev/null || echo 0)')
         # Judge
@@ -1263,7 +1274,7 @@ def _run_all_cases_single_exec(
     backend.write_file("/tmp/_run_all.sh", script)
     exit_code, stdout, stderr = backend.exec_command(
         "sh /tmp/_run_all.sh",
-        workdir=ale_bench.constants.WORK_DIR,
+        workdir=work_dir,
         timeout=int((time_limit + 5) * n + 60),
     )
 
@@ -1312,7 +1323,7 @@ def _run_cases_modal(
     tool_dir: Path,
     return_details: bool,
     skip_local_visualization: bool,
-    backend: ModalBackend,
+    backend: ModalBackend | LocalBackend,
 ) -> list[CaseResult]:
     """Run cases using Modal backend primitives (no local temp files)."""
     # Setup tool links
@@ -1323,11 +1334,12 @@ def _run_cases_modal(
     if compile_result is not None:
         return [compile_result for _ in inputs]
 
-    # Build commands
+    # Build commands (use backend.judge_dir for LocalBackend when /judge is read-only)
+    jd = backend.judge_dir
     batch_run_command = build_batch_run_command(code_language, judge_version, time_limit)
-    batch_judge_command = build_batch_judge_command()
-    reactive_judge_command = build_reactive_judge_command(code_language, judge_version, time_limit)
-    vis_command = build_vis_command()
+    batch_judge_command = build_batch_judge_command(judge_dir=jd)
+    reactive_judge_command = build_reactive_judge_command(code_language, judge_version, time_limit, judge_dir=jd)
+    vis_command = build_vis_command(judge_dir=jd)
 
     # For BATCH problems with multiple cases and no vis, use the optimized single-exec path
     if problem_type == ProblemType.BATCH and len(inputs) > 1 and skip_local_visualization:
@@ -1359,7 +1371,7 @@ def _run_cases_modal_batch_optimized(
     return_details: bool,
     run_command: str,
     judge_command: str,
-    backend: ModalBackend,
+    backend: ModalBackend | LocalBackend,
 ) -> list[CaseResult]:
     """Optimized batch case runner: all cases in ~3 round-trips instead of N×4."""
     raw_results = _run_all_cases_single_exec(

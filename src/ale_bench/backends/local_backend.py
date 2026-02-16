@@ -14,6 +14,10 @@ from .base import Backend
 
 logger = logging.getLogger(__name__)
 
+# Use /tmp for judge/work dirs when /judge and /workdir are read-only (e.g. sandboxed environments)
+_DEFAULT_LOCAL_JUDGE_DIR = os.environ.get("ALE_BENCH_JUDGE_DIR", "/tmp/ale-bench-judge")
+_DEFAULT_LOCAL_WORK_DIR = os.environ.get("ALE_BENCH_WORK_DIR", "/tmp/ale-bench-workdir")
+
 
 class LocalBackend(Backend):
     """Local subprocess-based execution backend.
@@ -23,8 +27,24 @@ class LocalBackend(Backend):
     the required toolchains (e.g., inside a Modal function).
     """
 
-    def __init__(self):
-        logger.info("[LOCAL] Local backend initialized")
+    def __init__(
+        self,
+        judge_dir: Optional[str] = None,
+        work_dir: Optional[str] = None,
+    ):
+        self._judge_dir = judge_dir or _DEFAULT_LOCAL_JUDGE_DIR
+        self._work_dir = work_dir or _DEFAULT_LOCAL_WORK_DIR
+        logger.info(f"[LOCAL] Local backend initialized (judge_dir={self._judge_dir}, work_dir={self._work_dir})")
+
+    @property
+    def judge_dir(self) -> str:
+        """Writable directory for judge binaries (avoids read-only /judge in sandboxes)."""
+        return self._judge_dir
+
+    @property
+    def work_dir(self) -> str:
+        """Writable directory for code and working files (avoids read-only /workdir in sandboxes)."""
+        return self._work_dir
 
     def build_tools(self, problem_id: str, tool_dir: Path) -> None:
         """Build Rust tools locally via subprocess."""
@@ -75,8 +95,8 @@ class LocalBackend(Backend):
         return (result.returncode, result.stdout, result.stderr)
 
     def setup_tool_links(self, tool_dir: str) -> None:
-        """Create symlinks so judge binaries are at /judge/target/release/."""
-        judge_release = Path("/judge/target/release")
+        """Create symlinks so judge binaries are at judge_dir/target/release/."""
+        judge_release = Path(self._judge_dir) / "target" / "release"
         judge_release.mkdir(parents=True, exist_ok=True)
 
         tool_path = Path(tool_dir)
@@ -93,5 +113,4 @@ class LocalBackend(Backend):
                 logger.info(f"[LOCAL] Symlinked {dst} -> {src}")
 
     def close(self) -> None:
-        print("tooldir", os.listdir("/root/.cache/ale-bench/problem_data"))
         logger.info("[LOCAL] Local backend closed (no-op)")

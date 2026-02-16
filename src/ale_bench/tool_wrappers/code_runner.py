@@ -263,15 +263,17 @@ def _run_code_modal(
     stdin: str,
     time_limit: float,
     memory_limit: int,
-    backend: ModalBackend,
+    backend: ModalBackend | LocalBackend,
 ) -> CodeRunResult:
     """Run code using Modal backend primitives (no local temp files)."""
     from ale_bench.code_language import get_compile_command, get_run_command
     import math
 
+    work_dir = backend.work_dir
+
     # Write code file
     submission_rel = get_submission_file_path(code_language, judge_version)
-    submission_path = f"{ale_bench.constants.WORK_DIR}/{submission_rel}"
+    submission_path = f"{work_dir}/{submission_rel}"
     backend.write_file(submission_path, code)
 
     # Object file path
@@ -281,11 +283,11 @@ def _run_code_modal(
 
     # Compile
     compile_cmd = get_compile_command(code_language, judge_version)
-    compile_cmd += f"; cp {ale_bench.constants.WORK_DIR}/{object_rel} /tmp/{object_rel}"
+    compile_cmd += f"; cp {work_dir}/{object_rel} /tmp/{object_rel}"
     compile_cmd += f"; chmod 744 /tmp/{object_rel}"
 
     exit_code, comp_stdout, comp_stderr = backend.exec_command(
-        compile_cmd, workdir=ale_bench.constants.WORK_DIR, timeout=ale_bench.constants.COMPILE_TIMEOUT
+        compile_cmd, workdir=work_dir, timeout=ale_bench.constants.COMPILE_TIMEOUT
     )
 
     # Check compilation
@@ -329,7 +331,7 @@ def _run_code_modal(
     # Run
     start_at = time.perf_counter()
     exit_code, run_stdout, run_stderr = backend.exec_command(
-        run_command, workdir=ale_bench.constants.WORK_DIR
+        run_command, workdir=work_dir
     )
     end_at = time.perf_counter()
     execution_time_host = end_at - start_at

@@ -41,9 +41,11 @@ def get_gen_volumes(host_paths: HostPathsGen, tool_dir: Path) -> dict[str, dict[
     }
 
 
-def build_gen_command(gen_kwargs: dict[str, Any]) -> str:
+def build_gen_command(gen_kwargs: dict[str, Any], judge_dir: str | None = None) -> str:
     """Build the command for the generator tool."""
-    gen_command = ale_bench.constants.GEN_BIN
+    jd = judge_dir or ale_bench.constants.JUDGE_DIR
+    gen_bin = f"{jd}/target/release/gen"
+    gen_command = gen_bin
     for key, value in gen_kwargs.items():
         if key == "dir":
             warnings.warn("`dir` is a reserved keyword and will be ignored.")
@@ -89,29 +91,33 @@ def run_gen_container(
         raise AleBenchError("Failed to generate the case.")
 
 
-def _generate_inputs_modal(seeds: list[int], gen_kwargs: dict[str, Any], tool_dir: Path, backend: ModalBackend) -> list[str]:
+def _generate_inputs_modal(
+    seeds: list[int], gen_kwargs: dict[str, Any], tool_dir: Path, backend: ModalBackend | LocalBackend
+) -> list[str]:
     """Generate input cases using Modal backend primitives (no local temp files).
 
     Retries once if the sandbox dies mid-operation.
     """
     """Implementation of Modal generate_inputs."""
-    # Setup tool links so gen binary is at /judge/target/release/gen
+    # Setup tool links so gen binary is at judge_dir/target/release/gen
     backend.setup_tool_links(str(tool_dir))
-        
+
     # Write seeds file directly in sandbox
     seeds_content = "\n".join(str(s) for s in seeds) + "\n"
     backend.write_file(ale_bench.constants.SEEDS_FILE, seeds_content)
 
-    # Clean and create working dirs (previous runs may have left files)
-    backend.exec_command(f"rm -rf {ale_bench.constants.IN_DIR}", timeout=10)
-    backend.mkdir(ale_bench.constants.IN_DIR)
+    # Clean and create working dirs (use backend.work_dir for LocalBackend when /workdir is read-only)
+    work_dir = backend.work_dir
+    in_dir = f"{work_dir}/in"
+    backend.exec_command(f"rm -rf {in_dir}", timeout=10)
+    backend.mkdir(in_dir)
 
     # Build and run command
-    gen_command = build_gen_command(gen_kwargs)
+    gen_command = build_gen_command(gen_kwargs, judge_dir=backend.judge_dir)
     timeout = ale_bench.constants.GENERATION_TIMEOUT
 
     exit_code, stdout, stderr = backend.exec_command(
-        gen_command, workdir=ale_bench.constants.WORK_DIR, timeout=timeout
+        gen_command, workdir=work_dir, timeout=timeout
     )
     if exit_code != 0:
         if stderr:
@@ -120,7 +126,7 @@ def _generate_inputs_modal(seeds: list[int], gen_kwargs: dict[str, Any], tool_di
             raise AleBenchError("Failed to generate the case.")
 
     # Read results directly from sandbox (batch read: 1 round-trip for all files)
-    input_files = backend.list_files(ale_bench.constants.IN_DIR, "*.txt")
+    input_files = backend.list_files(in_dir, "*.txt")
     for idx, input_file in enumerate(input_files):
         filename = input_file.split("/")[-1]
         assert filename == f"{idx:04d}.txt", (
