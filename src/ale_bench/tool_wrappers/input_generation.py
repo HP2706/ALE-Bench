@@ -137,7 +137,7 @@ def _generate_inputs_modal(
 
 def _generate_inputs_docker(seeds: list[int], gen_kwargs: dict[str, Any], tool_dir: Path, backend: Backend) -> list[str]:
     """Generate input cases using Docker backend (existing local temp file approach)."""
-    with tempfile.TemporaryDirectory() as temp_dir_str:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir_str:
         temp_dir = Path(temp_dir_str)
 
         gen_host_paths = setup_paths_gen(temp_dir, seeds)

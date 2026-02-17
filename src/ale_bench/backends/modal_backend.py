@@ -167,6 +167,7 @@ build_rust_tools_local(Path("{tool_dir}"))
                     app=self.app,
                     timeout=3600,
                     idle_timeout=5*60,
+                    cpu=(0.125, 20),
                     volumes={"/root/.cache/ale-bench": self.volume}
                 )
             logger.info("[MODAL] Sandbox created successfully")

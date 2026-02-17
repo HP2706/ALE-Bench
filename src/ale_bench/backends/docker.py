@@ -1,6 +1,7 @@
 """Docker backend implementation for ALE-Bench."""
 
 import logging
+import os
 import subprocess
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -18,11 +19,9 @@ class DockerBackend(Backend):
     def __init__(self):
         """Initialize Docker backend with a Docker client."""
         self.client = docker.from_env()
-        logger.info("[DOCKER] Docker backend initialized")
 
     def build_tools(self, problem_id: str, tool_dir: Path) -> None:
         """Build Rust tools using Docker container."""
-        logger.info(f"[DOCKER] Building Rust tools for {problem_id} at {tool_dir}")
         volumes = {
             str(tool_dir): {"bind": "/work", "mode": "rw"}
         }
@@ -34,7 +33,6 @@ class DockerBackend(Backend):
             remove=True,
             detach=False
         )
-        logger.info(f"[DOCKER] Rust tools built successfully for {problem_id}")
 
     def run_container(
         self,
@@ -46,14 +44,16 @@ class DockerBackend(Backend):
         **kwargs
     ) -> Any:
         """Run a command in a Docker container."""
-        logger.info(f"[DOCKER] Running container with image: {image}")
-        logger.info(f"[DOCKER] Command: {command[:200]}...")
-
         detach = kwargs.get("detach", True)
         remove = kwargs.get("remove", False)
         ports = kwargs.get("ports", None)
+        platform = kwargs.get("platform", None)
+        cpu_period = kwargs.get("cpu_period", None)
+        cpu_quota = kwargs.get("cpu_quota", None)
+        mem_limit = kwargs.get("mem_limit", None)
+        network_disabled = kwargs.get("network_disabled", None)
 
-        container = self.client.containers.run(
+        run_kwargs: Dict[str, Any] = dict(
             image=image,
             command=command,
             volumes=volumes,
@@ -61,10 +61,22 @@ class DockerBackend(Backend):
             environment=environment,
             detach=detach,
             remove=remove,
-            ports=ports,
         )
+        if ports is not None:
+            run_kwargs["ports"] = ports
+        if platform is not None:
+            run_kwargs["platform"] = platform
+        if cpu_period is not None:
+            run_kwargs["cpu_period"] = cpu_period
+        if cpu_quota is not None:
+            run_kwargs["cpu_quota"] = cpu_quota
+        if mem_limit is not None:
+            run_kwargs["mem_limit"] = mem_limit
+        if network_disabled is not None:
+            run_kwargs["network_disabled"] = network_disabled
 
-        logger.info(f"[DOCKER] Container started: {container.id if hasattr(container, 'id') else 'N/A'}")
+        container = self.client.containers.run(**run_kwargs)
+
         return container
 
     def write_file(self, remote_path: str, content: str | bytes) -> None:
@@ -111,5 +123,4 @@ class DockerBackend(Backend):
     def close(self) -> None:
         """Close Docker client connection."""
         if self.client:
-            logger.info("[DOCKER] Closing Docker client")
             self.client.close()

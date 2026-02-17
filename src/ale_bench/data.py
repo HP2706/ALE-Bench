@@ -504,7 +504,7 @@ def load_problem(problem_id: str, lite_version: bool) -> tuple[Problem, Seeds, S
     cache_dir = get_cache_dir()
 
     # Check for cached parsed problem data (avoids re-extraction which destroys compiled tools)
-    data_root = Path(f'/root/.cache/ale-bench/problem_data/{problem_id}')
+    data_root = cache_dir / "problem_data" / problem_id
     cache_key = f"{'lite' if lite_version else 'full'}"
     cached_pickle = data_root / f".problem_cache_{cache_key}.pkl"
     if cached_pickle.is_file():
@@ -719,13 +719,14 @@ def build_rust_tools(tool_cache_dir: Path, backend: Backend) -> None:
     if all_tools_exist:
         return
 
-    # Use backend to build tools
+    # Use backend to build tools — match the platform of the ale-bench judge images (amd64)
     build_container = backend.run_container(
         image=ale_bench.constants.RUST_TOOL_DOCKER_IMAGE,
         command="cargo build --release",
         volumes={str(tool_cache_dir): {"bind": ale_bench.constants.WORK_DIR, "mode": "rw"}},
         working_dir=ale_bench.constants.WORK_DIR,
         environment={"RUSTFLAGS": "-Awarnings"},
+        platform="linux/amd64",
         detach=True,
         remove=False,
     )

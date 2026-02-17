@@ -95,7 +95,7 @@ def local_visualization(
     if problem_id in ale_bench.constants.NO_LOCAL_VIS:
         return [None for _ in range(len(inputs))]  # No local visualization for this problem
     # Temporary directory
-    with tempfile.TemporaryDirectory() as temp_dir_str:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir_str:
         temp_dir = Path(temp_dir_str)
 
         # Prepare for the run

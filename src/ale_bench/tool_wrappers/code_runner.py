@@ -395,7 +395,7 @@ def _run_code_docker(
     backend: Backend,
 ) -> CodeRunResult:
     """Run code using Docker backend (existing local temp file approach)."""
-    with tempfile.TemporaryDirectory() as temp_dir_str:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir_str:
         temp_dir = Path(temp_dir_str)
         # Compilation
         host_paths_compile = setup_paths_compile(temp_dir, code, code_language, judge_version)

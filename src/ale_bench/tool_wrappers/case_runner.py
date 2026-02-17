@@ -1480,7 +1480,7 @@ def _run_cases_docker(
     backend: Backend,
 ) -> list[CaseResult]:
     """Run cases using Docker backend (existing local temp file approach)."""
-    with tempfile.TemporaryDirectory() as temp_dir_str:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir_str:
         temp_dir = Path(temp_dir_str)
 
         host_paths_compile = setup_paths_compile(temp_dir, code, code_language, judge_version)
@@ -1534,7 +1534,7 @@ def _run_cases_docker(
                         case_idx, input_str, code_language, judge_version,
                         temp_dir, tool_dir, return_details, skip_local_visualization,
                         host_paths_compile, batch_run_command, batch_judge_command,
-                        reactive_judge_command, vis_command,
+                        reactive_judge_command, vis_command, backend,
                     )
                     future_to_case_idx[future] = case_idx
                 for future in as_completed(future_to_case_idx):
