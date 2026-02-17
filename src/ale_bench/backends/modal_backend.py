@@ -362,7 +362,25 @@ build_rust_tools_local(Path("{tool_dir}"))
         sandbox = self._ensure_sandbox()
         import json as _json
         paths_json = _json.dumps(remote_paths)
-        script = f"import json; paths = {paths_json}; print(json.dumps([open(p).read() for p in paths]))"
+        encoded = base64.b64encode(paths_json.encode()).decode()
+
+        if len(encoded) < 50000:
+            script = (
+                "import json, base64; "
+                f"paths = json.loads(base64.b64decode('{encoded}')); "
+                "print(json.dumps([open(p).read() for p in paths]))"
+            )
+        else:
+            # Large payload: write paths to temp file first
+            self.write_file("/tmp/_batch_read_paths.b64", encoded)
+            script = (
+                "import json, base64, os\n"
+                "data = open('/tmp/_batch_read_paths.b64').read()\n"
+                "paths = json.loads(base64.b64decode(data))\n"
+                "print(json.dumps([open(p).read() for p in paths]))\n"
+                "os.remove('/tmp/_batch_read_paths.b64')\n"
+            )
+
         proc = sandbox.exec("python3", "-c", script, timeout=60)
         proc.wait()
         stdout = proc.stdout.read() if proc.stdout else ""
