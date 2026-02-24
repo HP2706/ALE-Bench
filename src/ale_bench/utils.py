@@ -58,17 +58,28 @@ def clear_cache() -> None:
 def get_local_data_dir() -> Path | None:
     """Get the local data directory for ALE-Bench.
 
+    Checks (in order):
+    1. ``ALE_BENCH_DATA`` environment variable
+    2. ``<repo_root>/data/`` next to the ``src/`` directory that contains this package
+
     Returns:
-        Path | None: The local data directory. Returns None if not set.
+        Path | None: The local data directory. Returns None if not found.
     """
     data_dir_str = os.environ.get("ALE_BENCH_DATA", None)
-    if data_dir_str is None:
-        return None
-    data_dir = Path(data_dir_str).expanduser().resolve()
-    if not data_dir.is_dir():
+    if data_dir_str is not None:
+        data_dir = Path(data_dir_str).expanduser().resolve()
+        if data_dir.is_dir():
+            return data_dir
         print(f"Data directory does not exist: {data_dir}")
         return None
-    return data_dir
+
+    # Auto-detect: <ale_bench package>/../../data  (i.e. ALE-Bench/src/ale_bench/../../data -> ALE-Bench/data)
+    _pkg_dir = Path(__file__).resolve().parent          # .../ALE-Bench/src/ale_bench
+    _repo_data = _pkg_dir.parent.parent / "data"        # .../ALE-Bench/data
+    if _repo_data.is_dir():
+        return _repo_data
+
+    return None
 
 
 def dir_tree(

@@ -56,6 +56,9 @@ def get_alebench_modal_image():
         "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && "
         "export PATH=$HOME/.cargo/bin:$PATH && "
         "rustc --version && cargo --version",
+    ).run_commands(
+        'echo "hello world"',
+        force_build=False,
     ).env({
         "PATH": "/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         "PYTHONPATH": "/root/ALE-Bench/src",
@@ -165,8 +168,8 @@ build_rust_tools_local(Path("{tool_dir}"))
                 sandbox = modal.Sandbox.create(
                     image=self.image,
                     app=self.app,
-                    timeout=3600,
-                    idle_timeout=5*60,
+                    timeout=60*60*12,
+                    idle_timeout=20*60,
                     cpu=(0.125, 20),
                     volumes={"/root/.cache/ale-bench": self.volume}
                 )
